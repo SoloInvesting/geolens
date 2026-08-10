@@ -89,7 +89,6 @@ a {
 .panel-heading,
 .recipe-footer,
 .intel-header,
-.source-strip,
 .thinking-card {
   display: flex;
   align-items: center;
@@ -1003,6 +1002,8 @@ a {
 .intel-panel {
   border-radius: 8px 8px 8px 22px;
   padding: 20px;
+  display: flex;
+  flex-direction: column;
   position: sticky;
   top: 96px;
   height: calc(100vh - 110px);
@@ -1031,8 +1032,9 @@ a {
 }
 
 .map-shell {
-  height: min(54vh, 540px);
-  min-height: 360px;
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 460px;
   border-radius: 14px;
   overflow: hidden;
   position: relative;
@@ -1141,71 +1143,6 @@ a {
   background: var(--orange);
 }
 
-.intel-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.intel-card {
-  min-height: 116px;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012));
-}
-
-.primary-intel {
-  grid-column: span 2;
-  min-height: 105px;
-  background: linear-gradient(145deg, rgba(183, 255, 74, 0.07), rgba(114, 213, 255, 0.025));
-}
-
-.intel-card strong {
-  display: block;
-  margin-top: 11px;
-  font-size: 14px;
-}
-
-.intel-card p {
-  margin: 7px 0 0;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.5;
-}
-
-.source-strip {
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-  margin-top: 10px;
-  padding: 11px 13px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-}
-
-.source-strip > span {
-  color: var(--muted);
-  font-size: 9px;
-  white-space: nowrap;
-}
-
-.source-strip > div {
-  display: flex;
-  justify-content: flex-end;
-  gap: 5px;
-  flex-wrap: wrap;
-}
-
-.source-strip b {
-  padding: 4px 6px;
-  border: 1px solid rgba(197, 220, 215, 0.14);
-  border-radius: 5px;
-  color: #b9cbc7;
-  font: 8px ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
 @media (max-width: 1120px) {
   .workspace {
     grid-template-columns: 1fr;
@@ -1250,8 +1187,7 @@ a {
   .empty-grid,
   .example-list,
   .scene-grid,
-  .decoder-summary,
-  .intel-grid {
+  .decoder-summary {
     grid-template-columns: 1fr;
   }
 
@@ -1264,11 +1200,8 @@ a {
     gap: 1px;
   }
 
-  .primary-intel {
-    grid-column: auto;
-  }
-
   .map-shell {
+    flex: none;
     min-height: 340px;
     height: 58vh;
   }

@@ -33,8 +33,8 @@ test("server-renders the GeoLens product", async () => {
   assert.match(html, /GeoLens/);
   assert.match(html, /סוכן פענוח עצמאי/);
   assert.match(html, /מה תרצה לאתר בכדור הארץ/);
-  assert.match(html, /Sentinel-1/);
-  assert.match(html, /NASA EONET/);
+  assert.match(html, /מפת ניתוח לוויין אינטראקטיבית/);
+  assert.doesNotMatch(html, /חיישן ראשי|סצנה נבחרת|מצב זיהוי|מקורות פעילים/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 

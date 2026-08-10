@@ -251,8 +251,6 @@ export function GeoAgentApp() {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [conversation, busy]);
 
-  const latestScene = analysis?.scenes[0] || null;
-
   async function submitQuery(rawQuery?: string) {
     const text = (rawQuery ?? query).trim();
     if (!text || busy) return;
@@ -399,35 +397,6 @@ export function GeoAgentApp() {
             </span>
           </div>
           <GeoMap analysis={analysis} />
-
-          <div className="intel-grid">
-            <section className="intel-card primary-intel">
-              <span className="eyebrow">חיישן ראשי</span>
-              <strong>{analysis?.recipe.primarySensor || "ייבחר לפי הבקשה"}</strong>
-              <p>{analysis?.recipe.expectedOutput || "הסוכן בוחן מטרה, רזולוציה ותנאי תצפית לפני הפעלת ניתוח."}</p>
-            </section>
-            <section className="intel-card">
-              <span className="eyebrow">סצנה נבחרת</span>
-              <strong>{latestScene?.platform || "אין עדיין"}</strong>
-              <p>{latestScene ? new Date(latestScene.datetime).toLocaleString("he-IL") : "ממתין לחיפוש בקטלוג"}</p>
-            </section>
-            <section className="intel-card">
-              <span className="eyebrow">מצב זיהוי</span>
-              <strong>{analysis ? modeLabel(analysis) : "לא הופעל"}</strong>
-              <p>{analysis?.verdict || "פוליגון יוצג רק אם הוחזר ממודל או מקור מוסמך."}</p>
-            </section>
-          </div>
-
-          <div className="source-strip">
-            <span>מקורות פעילים</span>
-            <div>
-              <b>CDSE</b>
-              <b>Sentinel-1</b>
-              <b>Sentinel-2</b>
-              <b>NASA EONET</b>
-              <b>OSM</b>
-            </div>
-          </div>
         </aside>
       </div>
     </main>
