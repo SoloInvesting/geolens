@@ -63,7 +63,7 @@ a {
 .topbar {
   min-height: 64px;
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: 1fr;
   align-items: center;
   gap: 20px;
   padding: 10px 18px;
@@ -1229,21 +1229,9 @@ a {
   }
 
   .topbar {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: 1fr;
     border-radius: 13px 13px 6px 6px;
     padding: 9px 11px;
-  }
-
-  .system-health {
-    display: none;
-  }
-
-  .ownership-badge {
-    font-size: 0;
-  }
-
-  .ownership-badge span {
-    font-size: 9px;
   }
 
   .conversation-panel,
@@ -1323,4 +1311,3 @@ a {
     animation-iteration-count: 1 !important;
   }
 }
-

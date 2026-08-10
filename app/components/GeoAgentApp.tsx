@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import type { AnalysisResponse, SceneResult } from "@/app/types";
 import { GeoMap } from "./GeoMap";
@@ -252,12 +252,6 @@ export function GeoAgentApp() {
   }, [conversation, busy]);
 
   const latestScene = analysis?.scenes[0] || null;
-  const healthLabel = useMemo(() => {
-    if (!analysis) return "מוכן לפענוח";
-    if (analysis.detectionMode === "model-detected") return "זיהוי מודל פעיל";
-    if (analysis.detectionMode === "catalog-confirmed") return "אימות קטלוגי פעיל";
-    return "בקרת ראיות פעילה";
-  }, [analysis]);
 
   async function submitQuery(rawQuery?: string) {
     const text = (rawQuery ?? query).trim();
@@ -311,14 +305,6 @@ export function GeoAgentApp() {
             <strong>GeoLens</strong>
             <span>Autonomous EO Interpreter</span>
           </div>
-        </div>
-        <div className="system-health">
-          <span className="live-dot" />
-          {healthLabel}
-        </div>
-        <div className="ownership-badge">
-          מערכת עצמאית
-          <span>ללא תלות במחברת</span>
         </div>
       </header>
 
