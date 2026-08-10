@@ -174,6 +174,7 @@ export async function planWithOpenRouter(query: string, fallback: InterpreterRes
   if (!apiKey) {
     return {
       interpretation: fallback,
+      alternateLocationText: null,
       brain: brainState({
         status: "not-configured",
         message: "לא נמצא מפתח OpenRouter בצד השרת. הופעל מפענח מקומי ללא עלות.",
@@ -225,6 +226,7 @@ export async function planWithOpenRouter(query: string, fallback: InterpreterRes
         : `OpenRouter החזיר שגיאה (${response.status}).`;
       return {
         interpretation: fallback,
+        alternateLocationText: null,
         brain: brainState({ status: "fallback", message: `${reason} הופעל מפענח מקומי ללא חיוב.` }),
       };
     }
@@ -236,6 +238,7 @@ export async function planWithOpenRouter(query: string, fallback: InterpreterRes
     if (!planned) {
       return {
         interpretation: fallback,
+        alternateLocationText: null,
         brain: brainState({
           provider: "OpenRouter",
           actualModel,
@@ -245,8 +248,12 @@ export async function planWithOpenRouter(query: string, fallback: InterpreterRes
       };
     }
 
+    const interpretation = mergeInterpretation(fallback, planned);
     return {
-      interpretation: mergeInterpretation(fallback, planned),
+      interpretation,
+      alternateLocationText: planned.locationText && planned.locationText !== interpretation.locationText
+        ? planned.locationText
+        : null,
       brain: brainState({
         provider: "OpenRouter",
         actualModel,
@@ -260,6 +267,7 @@ export async function planWithOpenRouter(query: string, fallback: InterpreterRes
       : "לא ניתן היה להגיע ל-OpenRouter.";
     return {
       interpretation: fallback,
+      alternateLocationText: null,
       brain: brainState({ status: "fallback", message: `${reason} הופעל מפענח מקומי ללא חיוב.` }),
     };
   } finally {

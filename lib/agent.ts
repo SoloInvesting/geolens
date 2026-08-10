@@ -16,6 +16,7 @@ import { buildMissionSpec } from "@/lib/mission";
 import { assessFeasibility, type ModelObservation } from "@/lib/feasibility";
 import { tryMeasureGeometry } from "@/lib/gis";
 import { buildEvidenceLedger } from "@/lib/evidence";
+import { extractLocationCandidate, parseDateRange } from "@/lib/request-parser";
 
 type KnownLocation = {
   names: string[];
@@ -90,36 +91,6 @@ const KNOWN_LOCATIONS: KnownLocation[] = [
     bbox: [-77.18, 38.79, -76.89, 39.02],
   },
 ];
-
-const HEBREW_MONTHS: Record<string, number> = {
-  ינואר: 0,
-  פברואר: 1,
-  מרץ: 2,
-  אפריל: 3,
-  מאי: 4,
-  יוני: 5,
-  יולי: 6,
-  אוגוסט: 7,
-  ספטמבר: 8,
-  אוקטובר: 9,
-  נובמבר: 10,
-  דצמבר: 11,
-};
-
-const ENGLISH_MONTHS: Record<string, number> = {
-  january: 0,
-  february: 1,
-  march: 2,
-  april: 3,
-  may: 4,
-  june: 5,
-  july: 6,
-  august: 7,
-  september: 8,
-  october: 9,
-  november: 10,
-  december: 11,
-};
 
 const RECIPES: Record<AnalysisIntent, AnalysisRecipe> = {
   flood: {
@@ -296,62 +267,9 @@ function addDays(date: Date, days: number) {
   return next;
 }
 
-function parseDateRange(query: string) {
-  const normalized = query.toLowerCase();
-  const now = new Date();
-
-  const iso = normalized.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
-  if (iso) {
-    const date = new Date(`${iso[1]}-${iso[2]}-${iso[3]}T00:00:00Z`);
-    return { startDate: toIsoDate(addDays(date, -5)), endDate: toIsoDate(addDays(date, 5)), dateLabel: toIsoDate(date) };
-  }
-
-  const lastYears = normalized.match(/(?:last|over the last)\s+(\d+)\s+years?/);
-  const hebrewYears = normalized.match(/ב(?:חמש|ארבע|שלוש|שתי|שנתיים|\d+)\s+השנים האחרונות/);
-  if (lastYears || hebrewYears) {
-    const hebrewNumber = hebrewYears?.[0].includes("חמש") ? 5 : hebrewYears?.[0].includes("ארבע") ? 4 : hebrewYears?.[0].includes("שלוש") ? 3 : 2;
-    const years = lastYears ? Number(lastYears[1]) : hebrewNumber;
-    const start = new Date(now);
-    start.setUTCFullYear(start.getUTCFullYear() - Math.min(Math.max(years, 1), 10));
-    return { startDate: toIsoDate(start), endDate: toIsoDate(now), dateLabel: `${years} השנים האחרונות` };
-  }
-
-  const monthNames = { ...ENGLISH_MONTHS, ...HEBREW_MONTHS };
-  for (const [monthName, month] of Object.entries(monthNames)) {
-    const escaped = monthName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const dayMonth = normalized.match(new RegExp(`(?:\\b(\\d{1,2})\\s+(?:ב)?${escaped}|${escaped}\\s+(\\d{1,2}))[,\\s-]*(20\\d{2})`));
-    if (dayMonth) {
-      const day = Number(dayMonth[1] || dayMonth[2]);
-      const date = new Date(Date.UTC(Number(dayMonth[3]), month, day));
-      return { startDate: toIsoDate(addDays(date, -5)), endDate: toIsoDate(addDays(date, 5)), dateLabel: toIsoDate(date) };
-    }
-    const monthYear = normalized.match(new RegExp(`${escaped}\\s+(20\\d{2})`));
-    if (monthYear) {
-      const date = new Date(Date.UTC(Number(monthYear[1]), month, 15));
-      return { startDate: toIsoDate(addDays(date, -20)), endDate: toIsoDate(addDays(date, 20)), dateLabel: `${monthName} ${monthYear[1]}` };
-    }
-  }
-
-  const year = normalized.match(/\b(20\d{2})\b/);
-  if (year) {
-    return { startDate: `${year[1]}-01-01`, endDate: `${year[1]}-12-31`, dateLabel: year[1] };
-  }
-
-  return { startDate: toIsoDate(addDays(now, -45)), endDate: toIsoDate(now), dateLabel: "45 הימים האחרונים" };
-}
-
 function findKnownLocation(query: string) {
   const normalized = query.toLowerCase();
   return KNOWN_LOCATIONS.find((location) => location.names.some((name) => normalized.includes(name)));
-}
-
-function extractLocationCandidate(query: string) {
-  const english = query.match(/\b(?:in|near|around|at)\s+([A-Za-zÀ-ÿ' .-]+?)(?=\s+(?:on|during|after|before|between|from|over|for|last)\b|[,.?]|$)/i);
-  if (english?.[1]) return english[1].trim();
-
-  const hebrew = query.match(/(?:באזור\s+|ליד\s+|סביב\s+|ב)([א-ת׳״'" -]{2,}?)(?=\s+(?:בתאריך|ביום|לאחר|לפני|בין|בחמש|בארבע|בשלוש|בשנת|ב-?\d|20\d{2})|[,.?]|$)/);
-  if (hebrew?.[1]) return hebrew[1].trim();
-  return "";
 }
 
 function buildInterpreter(query: string): InterpreterResult {
@@ -370,8 +288,8 @@ function buildInterpreter(query: string): InterpreterResult {
   };
 }
 
-async function geocode(locationText: string, query: string) {
-  const known = findKnownLocation(query) || findKnownLocation(locationText);
+async function geocode(locationText: string, query: string, alternateLocationText: string | null = null) {
+  const known = findKnownLocation(query) || findKnownLocation(locationText) || findKnownLocation(alternateLocationText || "");
   if (known) {
     return {
       name: known.canonical,
@@ -380,37 +298,42 @@ async function geocode(locationText: string, query: string) {
       bbox: known.bbox,
     };
   }
-  if (!locationText) return null;
+  const candidates = Array.from(new Set([locationText, alternateLocationText]
+    .map((candidate) => candidate?.trim() || "")
+    .filter(Boolean)));
 
-  try {
-    const url = new URL("https://nominatim.openstreetmap.org/search");
-    url.searchParams.set("q", locationText);
-    url.searchParams.set("format", "jsonv2");
-    url.searchParams.set("limit", "1");
-    const response = await fetch(url, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "GeoLens-Agent/1.0 (standalone EO analysis application)",
-      },
-    });
-    if (!response.ok) return null;
-    const results = (await response.json()) as Array<{
-      display_name: string;
-      lat: string;
-      lon: string;
-      boundingbox: [string, string, string, string];
-    }>;
-    const first = results[0];
-    if (!first) return null;
-    const latitude = Number(first.lat);
-    const longitude = Number(first.lon);
-    const bbox: [number, number, number, number] = first.boundingbox
-      ? [Number(first.boundingbox[2]), Number(first.boundingbox[0]), Number(first.boundingbox[3]), Number(first.boundingbox[1])]
-      : [longitude - 0.2, latitude - 0.2, longitude + 0.2, latitude + 0.2];
-    return { name: first.display_name, latitude, longitude, bbox };
-  } catch {
-    return null;
+  for (const candidate of candidates) {
+    try {
+      const url = new URL("https://nominatim.openstreetmap.org/search");
+      url.searchParams.set("q", candidate);
+      url.searchParams.set("format", "jsonv2");
+      url.searchParams.set("limit", "1");
+      const response = await fetch(url, {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "GeoLens-Agent/1.0 (standalone EO analysis application)",
+        },
+      });
+      if (!response.ok) continue;
+      const results = (await response.json()) as Array<{
+        display_name: string;
+        lat: string;
+        lon: string;
+        boundingbox: [string, string, string, string];
+      }>;
+      const first = results[0];
+      if (!first) continue;
+      const latitude = Number(first.lat);
+      const longitude = Number(first.lon);
+      const bbox: [number, number, number, number] = first.boundingbox
+        ? [Number(first.boundingbox[2]), Number(first.boundingbox[0]), Number(first.boundingbox[3]), Number(first.boundingbox[1])]
+        : [longitude - 0.2, latitude - 0.2, longitude + 0.2, latitude + 0.2];
+      return { name: first.display_name, latitude, longitude, bbox };
+    } catch {
+      continue;
+    }
   }
+  return null;
 }
 
 function dateDistanceDays(a: string, b: string) {
@@ -747,8 +670,8 @@ function buildLimitations(
 export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
   const cleanedQuery = query.trim().slice(0, 1_500);
   const fallbackInterpreter = buildInterpreter(cleanedQuery);
-  const { interpretation: interpreter, brain } = await planWithOpenRouter(cleanedQuery, fallbackInterpreter);
-  const location = await geocode(interpreter.locationText, cleanedQuery);
+  const { interpretation: interpreter, alternateLocationText, brain } = await planWithOpenRouter(cleanedQuery, fallbackInterpreter);
+  const location = await geocode(interpreter.locationText, cleanedQuery, alternateLocationText);
   const recipe = RECIPES[interpreter.intent];
 
   if (!location) {
