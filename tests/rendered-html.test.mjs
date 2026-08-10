@@ -39,12 +39,13 @@ test("server-renders the GeoLens product", async () => {
 });
 
 test("keeps the independent agent architecture and model routing visible in source", async () => {
-  const [page, layout, packageJson, agent, modelRouter, route] = await Promise.all([
+  const [page, layout, packageJson, agent, modelRouter, openRouter, route] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../lib/agent.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/model-router.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/openrouter.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/analyze/route.ts", import.meta.url), "utf8"),
   ]);
   assert.match(page, /GeoAgentApp/);
@@ -61,5 +62,8 @@ test("keeps the independent agent architecture and model routing visible in sour
   assert.match(modelRouter, /prithvi-eo-2.0-sen1floods11/);
   assert.match(modelRouter, /volcanic-hotspot-rf-s2/);
   assert.match(modelRouter, /yolo-obb-geospatial/);
+  assert.match(openRouter, /openrouter\/free/);
+  assert.match(openRouter, /OPENROUTER_API_KEY/);
+  assert.doesNotMatch(openRouter, /openrouter\/auto/);
   assert.match(route, /analyzeRequest/);
 });

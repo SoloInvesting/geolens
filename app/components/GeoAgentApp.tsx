@@ -2,7 +2,7 @@
 
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import type { AnalysisResponse, ModelRun, SceneResult } from "@/app/types";
+import type { AnalysisResponse, BrainRun, ModelRun, SceneResult } from "@/app/types";
 import { GeoMap } from "./GeoMap";
 
 type ConversationItem =
@@ -29,7 +29,18 @@ function loadSavedAnalysis() {
   const saved = window.localStorage.getItem("geolens-last-analysis");
   if (!saved) return null;
   try {
-    return JSON.parse(saved) as AnalysisResponse;
+    const parsed = JSON.parse(saved) as AnalysisResponse & { brain?: BrainRun };
+    return {
+      ...parsed,
+      brain: parsed.brain || {
+        provider: "GeoLens",
+        requestedModel: "openrouter/free",
+        actualModel: null,
+        status: "fallback",
+        freeOnly: true,
+        message: "תוצאה קודמת שנוצרה לפני חיבור OpenRouter.",
+      },
+    };
   } catch {
     window.localStorage.removeItem("geolens-last-analysis");
     return null;
@@ -58,6 +69,12 @@ function modelStatusLabel(model: ModelRun) {
   if (model.status === "failed") return "שירות המודל לא השלים פענוח";
   if (model.status === "not-configured") return "מודל ייעודי מוכן לחיבור";
   return "לא נדרש מודל ייעודי";
+}
+
+function brainStatusLabel(brain: BrainRun) {
+  if (brain.status === "completed") return "מוח הסוכן מחובר";
+  if (brain.status === "not-configured") return "OpenRouter אינו מוגדר";
+  return "פענוח מקומי פעיל";
 }
 
 function sourceRole(scene: SceneResult) {
@@ -219,6 +236,15 @@ function ResultMessage({ result }: { result: AnalysisResponse }) {
             </ul>
           </section>
         )}
+
+        <div className={`brain-status brain-${result.brain.status}`}>
+          <span className={result.brain.status === "completed" ? "model-connected" : "model-ready"} />
+          <div>
+            <strong>{brainStatusLabel(result.brain)} · {result.brain.actualModel || result.brain.requestedModel}</strong>
+            <p>{result.brain.message}</p>
+            <small>מסלול חינמי בלבד, ללא מעבר אוטומטי למודל בתשלום</small>
+          </div>
+        </div>
 
         <div className={`model-status model-${result.model.status}`}>
           <span className={result.model.status === "completed" ? "model-connected" : result.model.status === "not-configured" ? "model-ready" : "model-warning"} />

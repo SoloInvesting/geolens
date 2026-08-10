@@ -10,6 +10,7 @@ import type {
   SceneResult,
 } from "@/app/types";
 import { runDedicatedModel, selectedModel } from "@/lib/model-router";
+import { planWithOpenRouter } from "@/lib/openrouter";
 
 type KnownLocation = {
   names: string[];
@@ -702,7 +703,8 @@ function buildLimitations(
 
 export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
   const cleanedQuery = query.trim().slice(0, 1_500);
-  const interpreter = buildInterpreter(cleanedQuery);
+  const fallbackInterpreter = buildInterpreter(cleanedQuery);
+  const { interpretation: interpreter, brain } = await planWithOpenRouter(cleanedQuery, fallbackInterpreter);
   const location = await geocode(interpreter.locationText, cleanedQuery);
   const recipe = RECIPES[interpreter.intent];
 
@@ -726,6 +728,7 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
       steps,
       limitations: ["לא ניתן להריץ פענוח ללא אזור חיפוש."],
       clarification: "באיזה מקום או אזור לבצע את הניתוח? אפשר לכתוב עיר, מדינה או קואורדינטות.",
+      brain,
       model: {
         ...model,
         message: "לא הופעל לפני פתרון מקום.",
@@ -785,6 +788,7 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
     steps,
     limitations: buildLimitations(interpreter.intent, scenes, events, geometry, modelResult.model),
     clarification: null,
+    brain,
     model: modelResult.model,
     generatedAt: new Date().toISOString(),
   };

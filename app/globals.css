@@ -862,6 +862,53 @@ a {
   text-underline-offset: 3px;
 }
 
+.brain-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 13px 14px;
+  border: 1px solid rgba(183, 255, 74, 0.24);
+  border-radius: 12px;
+  background: rgba(183, 255, 74, 0.055);
+}
+
+.brain-status > span,
+.model-status > span {
+  flex: 0 0 auto;
+  margin-top: 4px;
+}
+
+.brain-status strong,
+.brain-status p,
+.brain-status small {
+  display: block;
+}
+
+.brain-status strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.brain-status p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.brain-status small {
+  margin-top: 5px;
+  color: var(--lime);
+  font-size: 9px;
+}
+
+.brain-fallback,
+.brain-not-configured {
+  border-color: rgba(114, 213, 255, 0.22);
+  background: rgba(114, 213, 255, 0.045);
+}
+
 .thinking-card {
   gap: 14px;
   max-width: 520px;

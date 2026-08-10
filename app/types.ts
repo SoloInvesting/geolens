@@ -39,6 +39,15 @@ export type ModelRun = {
   calibratedConfidence: boolean;
 };
 
+export type BrainRun = {
+  provider: "OpenRouter" | "GeoLens";
+  requestedModel: "openrouter/free";
+  actualModel: string | null;
+  status: "completed" | "fallback" | "not-configured";
+  freeOnly: true;
+  message: string;
+};
+
 export type SceneResult = {
   id: string;
   collection: string;
@@ -116,6 +125,7 @@ export type AnalysisResponse = {
   steps: AgentStep[];
   limitations: string[];
   clarification: string | null;
+  brain: BrainRun;
   model: ModelRun;
   generatedAt: string;
 };
