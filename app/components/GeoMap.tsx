@@ -46,13 +46,11 @@ export function GeoMap({ analysis }: GeoMapProps) {
       });
       const evidenceLayer = L.layerGroup().addTo(map);
       const sceneLayer = L.layerGroup().addTo(map);
-      const sourceImageLayer = L.layerGroup().addTo(map);
 
       L.control
         .layers(
           { "תצלום לוויין": satellite, "מפת רחובות": street },
           {
-            "תמונות מקור": sourceImageLayer,
             "טביעת רגל של סצנות": sceneLayer,
             "אירועים וזיהויים": evidenceLayer,
           },
@@ -88,15 +86,11 @@ export function GeoMap({ analysis }: GeoMapProps) {
                 { color: "#a78bfa", weight: 1.5, dashArray: "6 6", fillOpacity: 0.02 },
               );
           footprint.bindTooltip(`${scene.instrument} · ${new Date(scene.datetime).toLocaleDateString("he-IL")}`);
+          const popup = document.createElement("div");
+          popup.dir = "rtl";
+          popup.textContent = `${scene.catalog} · ציון בחירה ${Math.round(scene.qualityScore)}/100 · ${scene.assetAccess}`;
+          footprint.bindPopup(popup);
           footprint.addTo(sceneLayer);
-
-          if (scene.thumbnailUrl && index < 2) {
-            L.imageOverlay(
-              scene.thumbnailUrl,
-              L.latLngBounds([scene.bbox[1], scene.bbox[0]], [scene.bbox[3], scene.bbox[2]]),
-              { opacity: index === 0 ? 0.62 : 0.35, interactive: false },
-            ).addTo(sourceImageLayer);
-          }
         }
 
         for (const event of analysis.events) {
@@ -113,7 +107,7 @@ export function GeoMap({ analysis }: GeoMapProps) {
         }
 
         if (analysis.detectionGeometry) {
-          L.geoJSON(analysis.detectionGeometry as Parameters<typeof L.geoJSON>[0], {
+          const detectionLayer = L.geoJSON(analysis.detectionGeometry as Parameters<typeof L.geoJSON>[0], {
             style: {
               color: "#ff3b5c",
               weight: 3,
@@ -128,12 +122,18 @@ export function GeoMap({ analysis }: GeoMapProps) {
                 fillColor: "#ff3b5c",
                 fillOpacity: 1,
               }),
-          })
-            .bindTooltip("תוצאת מודל")
-            .addTo(evidenceLayer);
+          });
+          const detectionPopup = document.createElement("div");
+          detectionPopup.dir = "rtl";
+          detectionPopup.textContent = analysis.measurements?.areaKm2 === null || !analysis.measurements
+            ? `תוצאת ${analysis.model.name}`
+            : `תוצאת ${analysis.model.name} · שטח ${analysis.measurements.areaKm2.toLocaleString("he-IL")} קמ״ר`;
+          detectionLayer.bindTooltip("תוצאת מודל").bindPopup(detectionPopup).addTo(evidenceLayer);
+          const detectedBounds = detectionLayer.getBounds();
+          if (detectedBounds.isValid()) map.fitBounds(detectedBounds.pad(0.15), { maxZoom: 14 });
         }
 
-        map.fitBounds(analysisBounds.pad(0.08), { maxZoom: 11 });
+        if (!analysis.detectionGeometry) map.fitBounds(analysisBounds.pad(0.08), { maxZoom: 11 });
       }
 
       const legend = new L.Control({ position: "bottomleft" });
@@ -168,9 +168,8 @@ export function GeoMap({ analysis }: GeoMapProps) {
       <div ref={containerRef} className="geo-map" />
       <div className="map-status">
         <span className="live-dot" />
-        {analysis ? `${analysis.scenes.length} סצנות · ${analysis.events.length} אירועים` : "ממתין לבקשת פענוח"}
+        {analysis ? `${analysis.scenes.length} סצנות · ${analysis.events.length} אירועים · ${analysis.findingStatus}` : "ממתין לבקשת פענוח"}
       </div>
     </div>
   );
 }
-

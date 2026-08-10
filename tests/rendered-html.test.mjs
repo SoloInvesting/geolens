@@ -38,30 +38,53 @@ test("server-renders the GeoLens product", async () => {
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
-test("keeps the independent agent architecture and model routing visible in source", async () => {
-  const [page, layout, packageJson, agent, modelRouter, openRouter, route] = await Promise.all([
+test("keeps the evidence-first agent architecture and model routing visible in source", async () => {
+  const [page, layout, packageJson, agent, modelRouter, openRouter, dataBroker, mission, feasibility, gis, evidence, app, route] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../lib/agent.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/model-router.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/openrouter.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/data-broker.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/mission.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/feasibility.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/gis.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/evidence.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/GeoAgentApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/analyze/route.ts", import.meta.url), "utf8"),
   ]);
   assert.match(page, /GeoAgentApp/);
   assert.match(layout, /lang="he"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.match(agent, /runDedicatedModel/);
-  assert.match(agent, /sentinel-1-grd/);
-  assert.match(agent, /sentinel-2-l2a/);
+  assert.match(agent, /querySatelliteScenes/);
+  assert.match(agent, /buildMissionSpec/);
+  assert.match(agent, /assessFeasibility/);
+  assert.match(agent, /buildEvidenceLedger/);
   assert.match(agent, /eonet\.gsfc\.nasa\.gov/);
   assert.match(modelRouter, /GEO_MODEL_FLOOD_URL/);
   assert.match(modelRouter, /GEO_MODEL_BURNSCAR_URL/);
   assert.match(modelRouter, /GEO_MODEL_VOLCANO_URL/);
-  assert.match(modelRouter, /GEO_MODEL_OBJECT_URL/);
+  assert.match(modelRouter, /GEO_MODEL_OPEN_VOCAB_URL/);
+  assert.match(modelRouter, /GEO_MODEL_VESSEL_URL/);
   assert.match(modelRouter, /prithvi-eo-2.0-sen1floods11/);
   assert.match(modelRouter, /volcanic-hotspot-rf-s2/);
-  assert.match(modelRouter, /yolo-obb-geospatial/);
+  assert.match(modelRouter, /grounding-dino-sam2-eo/);
+  assert.match(modelRouter, /xview3-vessel-s1/);
+  assert.match(dataBroker, /earth-search\.aws\.element84\.com/);
+  assert.match(dataBroker, /cmr\.earthdata\.nasa\.gov\/stac\/LPCLOUD/);
+  assert.match(dataBroker, /landsat-c2-l2/);
+  assert.match(dataBroker, /sentinel-2-c1-l2a/);
+  assert.match(dataBroker, /HLSS30_2\.0/);
+  assert.match(dataBroker, /storage:requester_pays/);
+  assert.match(mission, /geolens-mission\/v1/);
+  assert.match(feasibility, /findingStatus/);
+  assert.match(feasibility, /MODEL_ENDPOINT_UNCONFIGURED/);
+  assert.match(gis, /spherical-wgs84/);
+  assert.match(evidence, /geolens-evidence\/v1/);
+  assert.match(app, /הורד GeoJSON/);
+  assert.match(app, /Evidence Ledger/);
   assert.match(openRouter, /openrouter\/free/);
   assert.match(openRouter, /OPENROUTER_API_KEY/);
   assert.doesNotMatch(openRouter, /openrouter\/auto/);

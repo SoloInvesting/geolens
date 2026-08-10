@@ -11,6 +11,11 @@ import type {
 } from "@/app/types";
 import { runDedicatedModel, selectedModel } from "@/lib/model-router";
 import { planWithOpenRouter } from "@/lib/openrouter";
+import { querySatelliteScenes } from "@/lib/data-broker";
+import { buildMissionSpec } from "@/lib/mission";
+import { assessFeasibility, type ModelObservation } from "@/lib/feasibility";
+import { tryMeasureGeometry } from "@/lib/gis";
+import { buildEvidenceLedger } from "@/lib/evidence";
 
 type KnownLocation = {
   names: string[];
@@ -237,7 +242,7 @@ function includesAny(query: string, terms: string[]) {
 
 function inferIntent(query: string): AnalysisIntent {
   const normalized = query.toLowerCase();
-  if (includesAny(normalized, ["הר געש", "הרי געש", "התפרצות", "התפרצויות", "לבה", "אפר געשי", "volcano", "eruption", "lava", "ash plume"])) return "volcano";
+  if (includesAny(normalized, ["הר געש", "הרי געש", "געשי", "געשית", "וולקני", "התפרצות", "התפרצויות", "לבה", "אפר געשי", "volcano", "volcanic", "eruption", "lava", "ash plume"])) return "volcano";
   if (includesAny(normalized, ["הצפה", "הצפות", "שיטפון", "שטפונות", "flood", "inundation", "standing water"])) return "flood";
   if (includesAny(normalized, ["שריפה", "שריפות", "צלקת שריפה", "שטח שרוף", "wildfire", "burn scar", "active fire", "smoke plume"])) return "wildfire";
   if (includesAny(normalized, ["ספינה", "ספינות", "כלי שיט", "אונייה", "ship", "vessel", "boat"])) return "vessel";
@@ -500,8 +505,21 @@ async function queryScenes(
   interpreter: InterpreterResult,
   location: NonNullable<AnalysisResponse["location"]>,
   events: EventEvidence[],
+  queryText: string,
 ) {
   const window = chooseSceneWindow(interpreter, events);
+  const brokerScenes = await querySatelliteScenes({
+    intent: interpreter.intent,
+    bbox: location.bbox,
+    startDate: window.start,
+    endDate: window.end,
+    targetDate: events[0]?.date.slice(0, 10) || (/^\d{4}-\d{2}-\d{2}$/.test(interpreter.dateLabel) ? interpreter.dateLabel : interpreter.endDate),
+    queryText,
+    maxScenes: interpreter.intent === "wildfire" || interpreter.intent === "change" ? 12 : 8,
+    timeoutMs: 8_000,
+  });
+  if (brokerScenes.length) return brokerScenes;
+
   const collections = collectionsFor(interpreter.intent);
   const results: SceneResult[] = [];
 
@@ -557,6 +575,22 @@ async function queryScenes(
           geometry: (feature.geometry || null) as GeoJsonGeometry | null,
           assets: publicAssets,
           role: collectionIndex === 0 && results.length === 0 ? "primary" : collectionIndex === 0 ? "context" : "confirmation",
+          catalog: "Copernicus Data Space",
+          canonicalSceneId: `${collection}:${String(feature.id || "unknown-scene").toLowerCase()}`,
+          gsdMeters: collection.includes("sentinel-1") ? 10 : Number(properties.gsd || 10),
+          qualityScore: Math.max(0, Math.min(100, 100 - sceneCloudCover(feature) - dateDistanceDays(sceneDate(feature, window.end), window.end))),
+          selectionReason: "סצנת fallback מ-Copernicus לאחר שה-Data Broker המאוחד לא החזיר תוצאות.",
+          assetAccess: publicAssets.length ? "public-http" : "metadata-only",
+          license: {
+            licenseId: "Copernicus Sentinel data terms",
+            commercialUse: null,
+            redistribution: null,
+            attributionRequired: null,
+            sourceProvider: "European Commission Copernicus / ESA",
+            sourceItemId: String(feature.id || "unknown-scene"),
+            termsUrl: "https://dataspace.copernicus.eu/terms-and-conditions",
+            note: "יש לאמת את תנאי המקור לפני שימוש מסחרי או הפצה.",
+          },
         });
       }
     } catch {
@@ -618,7 +652,12 @@ async function queryEvents(
         type: "catalog-event",
       });
     }
-    return events.slice(0, 8);
+    return events
+      .sort((left, right) => (
+        haversineKm(center, left.coordinates) + dateDistanceDays(left.date, interpreter.endDate) / 8
+        - haversineKm(center, right.coordinates) - dateDistanceDays(right.date, interpreter.endDate) / 8
+      ))
+      .slice(0, 8);
   } catch {
     return [];
   }
@@ -689,15 +728,19 @@ function buildLimitations(
   model: ModelRun,
 ) {
   const limitations: string[] = [];
-  if (!scenes.length) limitations.push("לא נמצאה סצנת Sentinel מתאימה בחלון הזמן שנבדק.");
+  if (!scenes.length) limitations.push("לא נמצאה סצנת לוויין מתאימה בקטלוגים ובחלון הזמן שנבדקו.");
   if (!events.length && ["flood", "wildfire", "volcano"].includes(intent)) limitations.push("לא נמצא דיווח NASA EONET סמוך למקום ולזמן. היעדר דיווח אינו הוכחה שלא התרחש אירוע.");
   if (!geometry) limitations.push("אין פוליגון זיהוי מאומת. המפה מציגה רק אזור חיפוש, טביעת רגל של סצנה ונקודות קטלוגיות.");
   if (model.status === "not-configured") limitations.push(`נבחר ${model.name}, אך טרם הוגדרה כתובת השירות שלו.`);
   if (model.status === "blocked") limitations.push(model.message);
   if (model.status === "failed") limitations.push(`הפעלת ${model.name} לא הושלמה: ${model.message}`);
   if (geometry && !model.calibratedConfidence) limitations.push("המודל החזיר גאומטריה ללא ציון ביטחון מכויל, ולכן ציון הביטחון מוצג כשמרני.");
-  if (intent === "building") limitations.push("Sentinel-2 ברזולוציית 10 מטר אינו מתאים לזיהוי אמין של מבנים בודדים.");
+  if (intent === "building" && !scenes.some((scene) => scene.gsdMeters !== null && scene.gsdMeters <= 3 && scene.assetAccess === "public-http")) {
+    limitations.push("זיהוי מבנים בודדים דורש מקור RGB נגיש ברזולוציה של עד 3 מטר. רשומת NAIP בקטלוג לבדה אינה מספקת גישת פיקסלים ללא Requester Pays.");
+  }
   if (intent === "vessel") limitations.push("Sentinel-1 יכול להצביע על החזר חריג של כלי שיט, אך נדרש AIS או מקור נוסף לזיהוי זהות וסוג.");
+  if (scenes.some((scene) => scene.assetAccess === "requester-pays")) limitations.push("חלק מהסצנות נמצאו כקטלוג בלבד משום שנכסי המקור דורשים AWS Requester Pays.");
+  if (scenes.some((scene) => scene.license.commercialUse === null)) limitations.push("תנאי השימוש נשמרו עם המקור, אך נדרשת בדיקת רישוי לפני שימוש מסחרי או הפצה.");
   return limitations;
 }
 
@@ -709,8 +752,24 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
   const recipe = RECIPES[interpreter.intent];
 
   if (!location) {
-    const model = selectedModel(interpreter.intent);
+    const generatedAt = new Date().toISOString();
+    const model = {
+      ...selectedModel(interpreter.intent),
+      message: "לא הופעל לפני פתרון מקום.",
+    };
     const steps = buildSteps(interpreter, null, [], [], model, null);
+    const limitations = ["לא ניתן להריץ פענוח ללא אזור חיפוש מאומת."];
+    const feasibility: AnalysisResponse["feasibility"] = {
+      status: "blocked",
+      findingStatus: "indeterminate",
+      summary: "לא ניתן לקבוע דבר לפני פתרון מקום ויצירת AOI מאומת.",
+      checks: [{
+        code: "LOCATION_UNRESOLVED",
+        status: "fail",
+        message: "לא זוהה מקום חד-משמעי בבקשה.",
+        evidenceIds: [],
+      }],
+    };
     return {
       ok: false,
       query: cleanedQuery,
@@ -720,56 +779,109 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
       answer: "הבנתי את סוג הניתוח, אבל חסר מקום גאוגרפי חד-משמעי.",
       verdict: "נדרשת הבהרת מקום לפני חיפוש סצנות.",
       confidence: "not-assessed",
-      confidenceScore: 0,
+      confidenceScore: null,
+      findingStatus: "indeterminate",
       detectionMode: "not-feasible",
       scenes: [],
       events: [],
       detectionGeometry: null,
       steps,
-      limitations: ["לא ניתן להריץ פענוח ללא אזור חיפוש."],
+      limitations,
       clarification: "באיזה מקום או אזור לבצע את הניתוח? אפשר לכתוב עיר, מדינה או קואורדינטות.",
       brain,
-      model: {
-        ...model,
-        message: "לא הופעל לפני פתרון מקום.",
+      model,
+      mission: null,
+      feasibility,
+      measurements: null,
+      ledger: {
+        schemaVersion: "geolens-evidence/v1",
+        missionId: "mission-unresolved-location",
+        query: cleanedQuery,
+        entries: [],
+        claims: [{
+          id: "claim:location",
+          statement: "לא ניתן ליצור משימת פענוח ללא מקום מאומת.",
+          status: "not-established",
+          evidenceIds: [],
+        }],
+        modelVersions: model.id ? [{ id: model.id, version: model.version, status: model.status }] : [],
+        reasonCodes: ["LOCATION_UNRESOLVED"],
+        measurements: null,
+        limitations,
+        createdAt: generatedAt,
+        reviewStatus: "unreviewed",
       },
-      generatedAt: new Date().toISOString(),
+      exportsVersion: "geolens-export/v1",
+      generatedAt,
     };
   }
 
+  const mission = buildMissionSpec({ interpreter, location });
   const events = await queryEvents(interpreter, location);
-  const scenes = await queryScenes(interpreter, location, events);
+  const scenes = await queryScenes(interpreter, location, events, cleanedQuery);
   const modelResult = await runDedicatedModel({ query: cleanedQuery, interpreter, location, scenes, events });
   const geometry = modelResult.geometry;
-  const resolutionBlocked = modelResult.model.id === "yolo-obb-geospatial" && modelResult.model.status === "blocked";
-  const detectionMode = resolutionBlocked
-    ? "not-feasible"
-    : geometry
-      ? "model-detected"
+  const generatedAt = new Date().toISOString();
+  const measurements = geometry ? tryMeasureGeometry(geometry) : null;
+  const modelObservation: ModelObservation | null = modelResult.runId && modelResult.completedAt && modelResult.outcome && modelResult.model.id
+    ? {
+        runId: modelResult.runId,
+        modelId: modelResult.model.id,
+        modelVersion: modelResult.model.version,
+        completedAt: modelResult.completedAt,
+        outcome: modelResult.outcome,
+        confidence: modelResult.confidence,
+        geometry,
+      }
+    : null;
+  const feasibility = assessFeasibility({
+    mission,
+    scenes,
+    model: modelResult.model,
+    modelObservation,
+  });
+  const findingStatus = feasibility.findingStatus;
+  const detectionMode: AnalysisResponse["detectionMode"] = findingStatus === "detected"
+    ? "model-detected"
+    : feasibility.status === "blocked"
+      ? "not-feasible"
       : events.length
         ? "catalog-confirmed"
         : "source-only";
-  const confidenceScore = resolutionBlocked
-    ? 0.18
-    : geometry
-      ? Math.max(0, Math.min(modelResult.confidence ?? 0.6, 1))
-      : events.length && scenes.length
-        ? 0.74
-        : scenes.length
-          ? 0.46
-          : 0.22;
-  const confidence = confidenceScore >= 0.8 ? "high" : confidenceScore >= 0.55 ? "medium" : confidenceScore > 0.25 ? "low" : "not-assessed";
-  const verdict = resolutionBlocked
-    ? "הבקשה דורשת דימות ברזולוציה גבוהה יותר מ-Sentinel. הסוכן עצר לפני יצירת זיהוי מטעה."
-    : geometry
-      ? `הוחזרה גאומטריית זיהוי מ-${modelResult.model.name}, לצד סצנות המקור והראיות.`
-      : modelResult.model.status === "blocked"
-        ? `המודל שנבחר לא הופעל: ${modelResult.model.message}`
-      : events.length
-        ? `נמצא אירוע קטלוגי מתאים ו-${scenes.length} סצנות מקור. עדיין אין מסכת אובייקטים ממודל.`
-        : `נמצאו ${scenes.length} סצנות מקור, אך אין כרגע ראיה מספקת לקבוע שהאובייקט או האירוע זוהה.`;
+  const confidenceScore = modelResult.model.calibratedConfidence && modelResult.confidence !== null
+    ? Math.max(0, Math.min(modelResult.confidence, 1))
+    : null;
+  const confidence = confidenceScore === null
+    ? "not-assessed"
+    : confidenceScore >= 0.8
+      ? "high"
+      : confidenceScore >= 0.55
+        ? "medium"
+        : "low";
+  const verdict = findingStatus === "detected"
+    ? `הוחזרה גאומטריית זיהוי תקפה מ-${modelResult.model.name}, עם סצנות מקור ויומן ראיות.`
+    : findingStatus === "not-detected"
+      ? `המודל ${modelResult.model.name} השלים פענוח על קלט שעבר את שער ההיתכנות ולא החזיר ממצא.`
+      : feasibility.status === "blocked"
+        ? "המשימה אינה ניתנת להכרעה מהקלט הזמין. הסוכן עצר בלי לייצר זיהוי מטעה."
+        : events.length
+          ? `נמצאה רשומת אירוע חיצונית ו-${scenes.length} סצנות מקור, אך עדיין אין גאומטריית זיהוי ממודל.`
+          : `נמצאו ${scenes.length} סצנות מקור, אך אין ראיה מספקת לקבוע אם היעד קיים.`;
   const answer = `${recipe.title} עבור ${location.name}. הסוכן בחר ב-${recipe.primarySensor}, בדק את הטווח ${interpreter.dateLabel}, ואסף ${scenes.length} סצנות ו-${events.length} רשומות אירוע. ${verdict}`;
   const steps = buildSteps(interpreter, location, scenes, events, modelResult.model, geometry);
+  const limitations = buildLimitations(interpreter.intent, scenes, events, geometry, modelResult.model);
+  const ledger = buildEvidenceLedger({
+    query: cleanedQuery,
+    mission,
+    scenes,
+    events,
+    model: modelResult.model,
+    geometry,
+    measurements,
+    feasibility,
+    limitations,
+    generatedAt,
+  });
 
   return {
     ok: true,
@@ -781,15 +893,21 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
     verdict,
     confidence,
     confidenceScore,
+    findingStatus,
     detectionMode,
     scenes,
     events,
     detectionGeometry: geometry,
     steps,
-    limitations: buildLimitations(interpreter.intent, scenes, events, geometry, modelResult.model),
+    limitations,
     clarification: null,
     brain,
     model: modelResult.model,
-    generatedAt: new Date().toISOString(),
+    mission,
+    feasibility,
+    measurements,
+    ledger,
+    exportsVersion: "geolens-export/v1",
+    generatedAt,
   };
 }

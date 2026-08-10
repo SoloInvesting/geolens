@@ -2,7 +2,7 @@
 
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import type { AnalysisResponse, BrainRun, ModelRun, SceneResult } from "@/app/types";
+import type { AnalysisResponse, BrainRun, GeoJsonGeometry, ModelRun, SceneResult } from "@/app/types";
 import { GeoMap } from "./GeoMap";
 
 type ConversationItem =
@@ -18,10 +18,12 @@ const EXAMPLES = [
 ];
 
 const BRAIN_STAGES = [
-  "מפרק מקום, זמן ואובייקט",
-  "בוחר חיישן ומתכון ספקטרלי",
-  "מחפש סצנות ומקורות אימות",
-  "בודק היתכנות ורזולוציה",
+  "בונה MissionSpec מאומת",
+  "מחפש במקביל בשלושה קטלוגים",
+  "מדרג סצנות ובודק רישוי וגישה",
+  "בודק היתכנות, ערוצים ורזולוציה",
+  "מנתב למודל מומחה מתאים",
+  "בונה Evidence Ledger ומדידות GIS",
 ];
 
 function loadSavedAnalysis() {
@@ -30,6 +32,10 @@ function loadSavedAnalysis() {
   if (!saved) return null;
   try {
     const parsed = JSON.parse(saved) as AnalysisResponse & { brain?: BrainRun };
+    if (parsed.exportsVersion !== "geolens-export/v1" || !parsed.mission || !parsed.feasibility || !parsed.ledger) {
+      window.localStorage.removeItem("geolens-last-analysis");
+      return null;
+    }
     return {
       ...parsed,
       brain: parsed.brain || {
@@ -56,11 +62,23 @@ function confidenceLabel(result: AnalysisResponse) {
 
 function modeLabel(result: AnalysisResponse) {
   return {
-    "catalog-confirmed": "אירוע מאומת בקטלוג",
+    "catalog-confirmed": "ראיית הקשר קטלוגית",
     "model-detected": "זיהוי מודל",
     "source-only": "ראיית מקור בלבד",
-    "not-feasible": "נדרשת רזולוציה אחרת",
+    "not-feasible": "המשימה חסומה",
   }[result.detectionMode];
+}
+
+function findingLabel(result: AnalysisResponse) {
+  if (result.findingStatus === "detected") return "זוהה";
+  if (result.findingStatus === "not-detected") return "לא זוהה לאחר פענוח";
+  return "לא ניתן לקבוע";
+}
+
+function feasibilityLabel(result: AnalysisResponse) {
+  if (result.feasibility.status === "feasible") return "המשימה ישימה";
+  if (result.feasibility.status === "conditional") return "ישימה בתנאים";
+  return "המשימה חסומה";
 }
 
 function modelStatusLabel(model: ModelRun) {
@@ -116,7 +134,17 @@ function SceneCard({ scene }: { scene: SceneResult }) {
             <dt>עננות</dt>
             <dd>{scene.cloudCover === null ? "לא רלוונטי" : `${scene.cloudCover.toFixed(1)}%`}</dd>
           </div>
+          <div>
+            <dt>קטלוג</dt>
+            <dd>{scene.catalog}</dd>
+          </div>
+          <div>
+            <dt>ציון בחירה</dt>
+            <dd>{Math.round(scene.qualityScore)}/100</dd>
+          </div>
         </dl>
+        <p className="scene-selection">{scene.selectionReason}</p>
+        <p className="scene-license">רישיון: {scene.license.licenseId} · גישה: {scene.assetAccess}</p>
         <div className="source-links">
           <a href={scene.stacUrl} target="_blank" rel="noreferrer">STAC</a>
           {scene.assets.slice(0, 3).map((asset) => (
@@ -128,6 +156,89 @@ function SceneCard({ scene }: { scene: SceneResult }) {
       </div>
     </article>
   );
+}
+
+function SceneComparison({ scenes }: { scenes: SceneResult[] }) {
+  const [position, setPosition] = useState(50);
+  const comparable = scenes
+    .filter((scene) => scene.thumbnailUrl)
+    .sort((left, right) => new Date(left.datetime).getTime() - new Date(right.datetime).getTime());
+  const before = comparable[0];
+  const after = comparable[comparable.length - 1];
+  if (!before || !after || before.id === after.id || !before.thumbnailUrl || !after.thumbnailUrl) return null;
+
+  return (
+    <section className="comparison-panel">
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">השוואת מקור</span>
+          <h3>לפני ואחרי</h3>
+        </div>
+        <span>השוואה חזותית בלבד, ללא co-registration פיקסלי</span>
+      </div>
+      <div className="comparison-stage">
+        <Image src={before.thumbnailUrl} alt={`סצנת לפני ${before.datetime}`} fill unoptimized sizes="700px" />
+        <div className="comparison-after" style={{ clipPath: `inset(0 ${100 - position}% 0 0)` }}>
+          <Image src={after.thumbnailUrl} alt={`סצנת אחרי ${after.datetime}`} fill unoptimized sizes="700px" />
+        </div>
+        <i style={{ left: `${position}%` }} />
+        <span className="comparison-before-label">{new Date(before.datetime).toLocaleDateString("he-IL")}</span>
+        <span className="comparison-after-label">{new Date(after.datetime).toLocaleDateString("he-IL")}</span>
+      </div>
+      <input
+        type="range"
+        min="0"
+        max="100"
+        value={position}
+        onChange={(event) => setPosition(Number(event.target.value))}
+        aria-label="הזזת מחוון השוואת תמונות"
+      />
+    </section>
+  );
+}
+
+function geometryFeatureCollection(geometry: GeoJsonGeometry | null, result: AnalysisResponse) {
+  if (!geometry) return { type: "FeatureCollection", features: [] };
+  if (geometry.type === "FeatureCollection") return geometry;
+  return {
+    type: "FeatureCollection",
+    features: [{
+      type: "Feature",
+      geometry,
+      properties: {
+        missionId: result.mission?.missionId,
+        findingStatus: result.findingStatus,
+        modelId: result.model.id,
+        modelVersion: result.model.version,
+        generatedAt: result.generatedAt,
+      },
+    }],
+  };
+}
+
+function downloadArtifact(filename: string, value: unknown, mime = "application/json") {
+  const blob = new Blob([typeof value === "string" ? value : JSON.stringify(value, null, 2)], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function ledgerCsv(result: AnalysisResponse) {
+  const escape = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const header = ["id", "kind", "title", "source", "source_id", "observed_at", "url"];
+  const rows = result.ledger.entries.map((entry) => [
+    entry.id,
+    entry.kind,
+    entry.title,
+    entry.source,
+    entry.sourceId,
+    entry.observedAt,
+    entry.url,
+  ]);
+  return [header, ...rows].map((row) => row.map(escape).join(",")).join("\n");
 }
 
 function ResultMessage({ result }: { result: AnalysisResponse }) {
@@ -158,8 +269,49 @@ function ResultMessage({ result }: { result: AnalysisResponse }) {
             <strong>{result.interpretation.dateLabel}</strong>
           </div>
           <div>
-            <span>ביטחון</span>
-            <strong>{confidenceLabel(result)} · {Math.round(result.confidenceScore * 100)}%</strong>
+            <span>מסקנה</span>
+            <strong>{findingLabel(result)}</strong>
+          </div>
+          <div>
+            <span>ביטחון מכויל</span>
+            <strong>{confidenceLabel(result)}{result.confidenceScore === null ? "" : ` · ${Math.round(result.confidenceScore * 100)}%`}</strong>
+          </div>
+        </section>
+
+        {result.mission && (
+          <section className="mission-panel">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">MissionSpec מאומת</span>
+                <h3>{result.mission.targetConcept}</h3>
+              </div>
+              <code>{result.mission.missionId}</code>
+            </div>
+            <dl className="mission-grid">
+              <div><dt>חיישנים מועדפים</dt><dd>{result.mission.scenePolicy.preferredSensors.join(", ")}</dd></div>
+              <div><dt>חלון זמן</dt><dd>{result.mission.temporal.startDate} עד {result.mission.temporal.endDate}</dd></div>
+              <div><dt>GSD מרבי</dt><dd>{result.mission.scenePolicy.maxGsdMeters === null ? "ללא סף" : `${result.mission.scenePolicy.maxGsdMeters} מ׳`}</dd></div>
+              <div><dt>מספר סצנות נדרש</dt><dd>{result.mission.scenePolicy.minSceneCount}</dd></div>
+            </dl>
+          </section>
+        )}
+
+        <section className={`feasibility-panel feasibility-${result.feasibility.status}`}>
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">שער היתכנות</span>
+              <h3>{feasibilityLabel(result)}</h3>
+            </div>
+            <strong>{findingLabel(result)}</strong>
+          </div>
+          <p>{result.feasibility.summary}</p>
+          <div className="feasibility-checks">
+            {result.feasibility.checks.map((check) => (
+              <div key={`${check.code}-${check.message}`} className={`check-${check.status}`}>
+                <code>{check.code}</code>
+                <span>{check.message}</span>
+              </div>
+            ))}
           </div>
         </section>
 
@@ -213,6 +365,8 @@ function ResultMessage({ result }: { result: AnalysisResponse }) {
           </section>
         )}
 
+        <SceneComparison scenes={result.scenes} />
+
         {result.events.length > 0 && (
           <section className="events-panel">
             <span className="eyebrow">אימות חיצוני</span>
@@ -236,6 +390,37 @@ function ResultMessage({ result }: { result: AnalysisResponse }) {
             </ul>
           </section>
         )}
+
+        {result.measurements && (
+          <section className="measurements-panel">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">GIS דטרמיניסטי</span>
+                <h3>מדידות מהגאומטריה</h3>
+              </div>
+              <span>{result.measurements.method}</span>
+            </div>
+            <dl>
+              <div><dt>שטח</dt><dd>{result.measurements.areaKm2 === null ? "לא רלוונטי" : `${result.measurements.areaKm2.toLocaleString("he-IL")} קמ״ר`}</dd></div>
+              <div><dt>היקף</dt><dd>{result.measurements.perimeterKm === null ? "לא רלוונטי" : `${result.measurements.perimeterKm.toLocaleString("he-IL")} ק״מ`}</dd></div>
+              <div><dt>מספר ישויות</dt><dd>{result.measurements.featureCount}</dd></div>
+              <div><dt>מרכז</dt><dd>{result.measurements.centroid ? `${result.measurements.centroid[1].toFixed(5)}, ${result.measurements.centroid[0].toFixed(5)}` : "לא זמין"}</dd></div>
+            </dl>
+            <small>{result.measurements.precisionNote}</small>
+          </section>
+        )}
+
+        <section className="evidence-export-panel">
+          <div>
+            <span className="eyebrow">Evidence Ledger</span>
+            <strong>{result.ledger.entries.length} רשומות ראיה · {result.ledger.claims.length} טענות עקיבות</strong>
+          </div>
+          <div className="export-actions">
+            <button type="button" onClick={() => downloadArtifact(`geolens-${result.ledger.missionId}.json`, result.ledger)}>הורד JSON</button>
+            <button type="button" disabled={!result.detectionGeometry} onClick={() => downloadArtifact(`geolens-${result.ledger.missionId}.geojson`, geometryFeatureCollection(result.detectionGeometry, result), "application/geo+json")}>הורד GeoJSON</button>
+            <button type="button" onClick={() => downloadArtifact(`geolens-${result.ledger.missionId}.csv`, ledgerCsv(result), "text/csv;charset=utf-8")}>הורד CSV</button>
+          </div>
+        </section>
 
         <div className={`brain-status brain-${result.brain.status}`}>
           <span className={result.brain.status === "completed" ? "model-connected" : "model-ready"} />

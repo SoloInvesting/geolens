@@ -6,6 +6,7 @@ import type {
   ModelRun,
   SceneResult,
 } from "@/app/types";
+import { tryMeasureGeometry } from "@/lib/gis";
 
 type ResolvedLocation = {
   name: string;
@@ -16,6 +17,7 @@ type ResolvedLocation = {
 
 type ModelSpec = {
   id: string;
+  version: string;
   name: string;
   task: string;
   provider: string;
@@ -23,22 +25,26 @@ type ModelSpec = {
   endpointEnv: string;
   inputRequirement: string;
   intents: AnalysisIntent[];
-  requiredCollection?: "sentinel-1" | "sentinel-2";
+  requiredCollections?: Array<"sentinel-1" | "sentinel-2" | "hls">;
   requiredBands?: string[];
   minSceneCount?: number;
   maxResolutionMeters?: number;
 };
 
-type ModelExecution = {
+export type ModelExecution = {
   model: ModelRun;
   geometry: GeoJsonGeometry | null;
   confidence: number | null;
   summary: string;
+  runId?: string;
+  completedAt?: string;
+  outcome?: "positive" | "negative" | "inconclusive";
 };
 
 const MODEL_REGISTRY: ModelSpec[] = [
   {
     id: "prithvi-eo-2.0-sen1floods11",
+    version: "2.0-300M",
     name: "Prithvi-EO-2.0 300M TL Sen1Floods11",
     task: "סגמנטציית הצפות",
     provider: "IBM / NASA Prithvi דרך שירות פענוח GeoLens",
@@ -46,11 +52,12 @@ const MODEL_REGISTRY: ModelSpec[] = [
     endpointEnv: "GEO_MODEL_FLOOD_URL",
     inputRequirement: "Sentinel-2 L2A או HLS עם B02, B03, B04, B08A, B11 ו-B12. הפלט חייב להיות GeoJSON של מסכת ההצפה.",
     intents: ["flood"],
-    requiredCollection: "sentinel-2",
+    requiredCollections: ["sentinel-2", "hls"],
     requiredBands: ["B02", "B03", "B04", "B08A", "B11", "B12"],
   },
   {
     id: "prithvi-eo-2.0-burnscars",
+    version: "2.0-300M",
     name: "Prithvi-EO-2.0 300M BurnScars",
     task: "סגמנטציית צלקות שריפה וחומרה",
     provider: "IBM / NASA Prithvi דרך שירות פענוח GeoLens",
@@ -58,11 +65,13 @@ const MODEL_REGISTRY: ModelSpec[] = [
     endpointEnv: "GEO_MODEL_BURNSCAR_URL",
     inputRequirement: "HLS L30/S30 עם B02, B03, B04, B08A, B11 ו-B12, או Sentinel-2 לאחר עיבוד תואם HLS מאומת בשירות. תמונת לפני משמשת להקשר, והפלט חייב להיות GeoJSON של אזור השריפה.",
     intents: ["wildfire"],
-    requiredCollection: "sentinel-2",
+    requiredCollections: ["sentinel-2", "hls"],
     requiredBands: ["B02", "B03", "B04", "B08A", "B11", "B12"],
+    minSceneCount: 2,
   },
   {
     id: "volcanic-hotspot-rf-s2",
+    version: "research-contract/v1",
     name: "Volcanic Hotspot RF-S2",
     task: "סגמנטציית אנומליות תרמיות געשיות",
     provider: "GeoLens Volcano service, מודל Random Forest לאנומליות תרמיות",
@@ -70,19 +79,33 @@ const MODEL_REGISTRY: ModelSpec[] = [
     endpointEnv: "GEO_MODEL_VOLCANO_URL",
     inputRequirement: "Sentinel-2 עם B04, B08, B11 ו-B12 באזור הר הגעש. השירות מחשב מאפיינים תרמיים ומחזיר GeoJSON של זרימה, מוקד חם או פלומה מזוהה.",
     intents: ["volcano"],
-    requiredCollection: "sentinel-2",
+    requiredCollections: ["sentinel-2"],
     requiredBands: ["B04", "B08", "B11", "B12"],
   },
   {
-    id: "yolo-obb-geospatial",
-    name: "YOLO OBB Geospatial",
-    task: "זיהוי אובייקטים עם תיבות מסובבות ופוליגונים",
-    provider: "GeoLens Object Detection service",
-    modelCardUrl: "https://docs.ultralytics.com/tasks/obb/",
-    endpointEnv: "GEO_MODEL_OBJECT_URL",
-    inputRequirement: "דימות RGB אורתו ברזולוציה של עד 3 מטר לפיקסל. הפלט חייב להיות GeoJSON של תיבות מסובבות או פוליגוני אובייקטים.",
-    intents: ["building", "vessel"],
+    id: "grounding-dino-sam2-eo",
+    version: "proposal-pipeline/v1",
+    name: "Grounding DINO + SAM 2.1 EO",
+    task: "הצעת אובייקטים פתוחה לפי טקסט וסגמנטציית מופעים",
+    provider: "GeoLens Open Vocabulary service",
+    modelCardUrl: "https://github.com/IDEA-Research/Grounded-SAM-2",
+    endpointEnv: "GEO_MODEL_OPEN_VOCAB_URL",
+    inputRequirement: "RGB COG אורתו ברזולוציה של עד 3 מטר לפיקסל. השירות חייב לבצע tiling, להחזיר GeoJSON ולהצהיר על גרסאות Grounding DINO ו-SAM 2.1. התוצאה היא הצעת מועמד עד אימות אנליסט.",
+    intents: ["building"],
     maxResolutionMeters: 3,
+  },
+  {
+    id: "xview3-vessel-s1",
+    version: "xview3-second-place/public",
+    name: "xView3 Sentinel-1 Vessel Detector",
+    task: "איתור כלי שיט ב-SAR",
+    provider: "GeoLens SAR service, based on the public xView3 pipeline",
+    modelCardUrl: "https://github.com/DIUx-xView/xView3_second_place",
+    endpointEnv: "GEO_MODEL_VESSEL_URL",
+    inputRequirement: "Sentinel-1 GRD מכויל עם VV ו-VH, נרמול תואם xView3 ו-tiling. הפלט הוא נקודה או תיבה עם אומדן אורך, לא קונטור מדויק של גוף כלי השיט.",
+    intents: ["vessel"],
+    requiredCollections: ["sentinel-1"],
+    requiredBands: ["VV", "VH"],
   },
 ];
 
@@ -124,7 +147,11 @@ function sceneSupportsBands(scene: SceneResult, requiredBands: string[]) {
 
 function eligibleScenes(spec: ModelSpec, scenes: SceneResult[]) {
   return scenes.filter((scene) => {
-    if (spec.requiredCollection && !scene.collection.includes(spec.requiredCollection)) return false;
+    if (scene.assetAccess !== "public-http" || !scene.assets.length) return false;
+    if (spec.requiredCollections && !spec.requiredCollections.some((collection) => {
+      if (collection === "hls") return scene.collection.toLowerCase().includes("hls");
+      return scene.collection.includes(collection);
+    })) return false;
     if (spec.requiredBands && !sceneSupportsBands(scene, spec.requiredBands)) return false;
     if (spec.maxResolutionMeters !== undefined) {
       const resolution = metersPerPixel(scene);
@@ -147,7 +174,7 @@ function inputBlocker(
   if (spec.id === "prithvi-eo-2.0-burnscars" && !events.length && !hasExactAnalysisDate(interpreter)) {
     return "לסגמנטציית צלקת שריפה נדרש תאריך אירוע מדויק או אירוע קטלוגי מאומת, כדי לבחור תמונת לפני ואחרי אמיתיות.";
   }
-  if (spec.id === "volcano-thermal-s2" && !events.length && !hasExactAnalysisDate(interpreter)) {
+  if (spec.id === "volcanic-hotspot-rf-s2" && !events.length && !hasExactAnalysisDate(interpreter)) {
     return "לפענוח געשי נדרש תאריך מדויק או אירוע קטלוגי מאומת, כדי להימנע מהפעלת המודל על חלון זמן שרירותי.";
   }
   const eligible = eligibleScenes(spec, scenes);
@@ -157,6 +184,15 @@ function inputBlocker(
   if (!eligible.length) return "לא נמצאה סצנת מקור שמכילה את החיישן והערוצים שהמודל דורש.";
   if (eligible.length < (spec.minSceneCount || 1)) {
     return `המודל דורש לפחות ${spec.minSceneCount} סצנות מתאימות, למשל תמונה לפני ותמונה אחרי האירוע.`;
+  }
+  if (spec.id === "prithvi-eo-2.0-burnscars") {
+    const pivot = events[0]?.date || (hasExactAnalysisDate(interpreter) ? interpreter.dateLabel : null);
+    if (pivot) {
+      const pivotTime = new Date(pivot).getTime();
+      const hasBefore = eligible.some((scene) => new Date(scene.datetime).getTime() < pivotTime);
+      const hasAfter = eligible.some((scene) => new Date(scene.datetime).getTime() >= pivotTime);
+      if (!hasBefore || !hasAfter) return "מודל BurnScars דורש זוג סצנות אמיתי משני צדי תאריך האירוע.";
+    }
   }
   return null;
 }
@@ -174,6 +210,8 @@ function modelState(spec: ModelSpec | null, overrides: Partial<ModelRun> = {}): 
       message: "למשימה הזו לא נבחר מודל סגמנטציה ייעודי.",
       inputRequirement: "אין",
       calibratedConfidence: false,
+      version: null,
+      detected: null,
       ...overrides,
     };
   }
@@ -189,16 +227,30 @@ function modelState(spec: ModelSpec | null, overrides: Partial<ModelRun> = {}): 
     message: `ממתין לחיבור שירות ${spec.name}.`,
     inputRequirement: spec.inputRequirement,
     calibratedConfidence: false,
+    version: spec.version,
+    detected: null,
     ...overrides,
   };
 }
 
 function isFinitePosition(value: unknown): value is [number, number] {
-  return Array.isArray(value) && value.length >= 2 && value.slice(0, 2).every((coordinate) => typeof coordinate === "number" && Number.isFinite(coordinate));
+  return Array.isArray(value)
+    && value.length >= 2
+    && typeof value[0] === "number"
+    && typeof value[1] === "number"
+    && Number.isFinite(value[0])
+    && Number.isFinite(value[1])
+    && value[0] >= -180
+    && value[0] <= 180
+    && value[1] >= -90
+    && value[1] <= 90;
 }
 
 function isValidRing(value: unknown) {
-  return Array.isArray(value) && value.length >= 4 && value.every(isFinitePosition);
+  if (!Array.isArray(value) || value.length < 4 || !value.every(isFinitePosition)) return false;
+  const first = value[0] as [number, number];
+  const last = value[value.length - 1] as [number, number];
+  return first[0] === last[0] && first[1] === last[1];
 }
 
 function isValidPolygonCoordinates(value: unknown) {
@@ -223,6 +275,7 @@ function normalizeGeometry(value: unknown): GeoJsonGeometry | null {
     return { type: "MultiPolygon", coordinates: value.coordinates };
   }
   if (value.type === "FeatureCollection" && Array.isArray(value.features)) {
+    if (value.features.length > 10_000) return null;
     const features = value.features
       .filter(isRecord)
       .map((feature) => ({
@@ -255,6 +308,31 @@ function responseSummary(value: unknown) {
   return value.summary.trim().slice(0, 600);
 }
 
+function responseDetected(value: unknown) {
+  if (!isRecord(value) || typeof value.detected !== "boolean") return null;
+  return value.detected;
+}
+
+function responseConfidenceCalibrated(value: unknown) {
+  return isRecord(value) && value.confidenceCalibrated === true;
+}
+
+function geometryOverlapsAoi(geometry: GeoJsonGeometry, bbox: [number, number, number, number]) {
+  const measured = tryMeasureGeometry(geometry);
+  if (!measured?.bbox) return false;
+  const [west, south, east, north] = bbox;
+  const longitudeMargin = Math.max((east - west) * 0.1, 0.02);
+  const latitudeMargin = Math.max((north - south) * 0.1, 0.02);
+  const [resultWest, resultSouth, resultEast, resultNorth] = measured.bbox;
+  const overlaps = resultEast >= west - longitudeMargin
+    && resultWest <= east + longitudeMargin
+    && resultNorth >= south - latitudeMargin
+    && resultSouth <= north + latitudeMargin;
+  const aoiBoxArea = Math.max((east - west) * (north - south), 1e-9);
+  const resultBoxArea = Math.max((resultEast - resultWest) * (resultNorth - resultSouth), 0);
+  return overlaps && resultBoxArea <= aoiBoxArea * 25;
+}
+
 function compactScenes(scenes: SceneResult[]) {
   return scenes.slice(0, 6).map((scene) => ({
     id: scene.id,
@@ -264,6 +342,9 @@ function compactScenes(scenes: SceneResult[]) {
     bbox: scene.bbox,
     geometry: scene.geometry,
     stacUrl: scene.stacUrl,
+    catalog: scene.catalog,
+    assetAccess: scene.assetAccess,
+    license: scene.license,
     assets: scene.assets,
   }));
 }
@@ -367,6 +448,36 @@ export async function runDedicatedModel(input: {
     const geometry = responseGeometry(body);
     const confidence = responseConfidence(body);
     const summary = responseSummary(body);
+    const detected = responseDetected(body);
+    const confidenceCalibrated = responseConfidenceCalibrated(body);
+    if (detected === false) {
+      const completedAt = new Date().toISOString();
+      return {
+        model: modelState(spec, {
+          status: "completed",
+          message: summary || `${spec.name} השלים פענוח ולא החזיר ממצא בסצנות המתאימות.`,
+          calibratedConfidence: confidence !== null && confidenceCalibrated,
+          detected: false,
+        }),
+        geometry: null,
+        confidence,
+        summary,
+        runId: requestId,
+        completedAt,
+        outcome: "negative",
+      };
+    }
+    if (detected !== true) {
+      return {
+        model: modelState(spec, {
+          status: "failed",
+          message: `שירות ${spec.name} לא הצהיר detected=true או detected=false, ולכן התוצאה אינה קבילה.`,
+        }),
+        geometry: null,
+        confidence: null,
+        summary,
+      };
+    }
     if (!geometry) {
       return {
         model: modelState(spec, {
@@ -378,16 +489,32 @@ export async function runDedicatedModel(input: {
         summary,
       };
     }
+    if (!geometryOverlapsAoi(geometry, input.location.bbox)) {
+      return {
+        model: modelState(spec, {
+          status: "failed",
+          message: `שירות ${spec.name} החזיר גאומטריה מחוץ לאזור המשימה או גדולה ממנו באופן חריג.`,
+        }),
+        geometry: null,
+        confidence: null,
+        summary,
+      };
+    }
 
+    const completedAt = new Date().toISOString();
     return {
       model: modelState(spec, {
         status: "completed",
         message: summary || `${spec.name} החזיר גאומטריית זיהוי תקפה.`,
-        calibratedConfidence: confidence !== null,
+        calibratedConfidence: confidence !== null && confidenceCalibrated,
+        detected: true,
       }),
       geometry,
       confidence,
       summary,
+      runId: requestId,
+      completedAt,
+      outcome: "positive",
     };
   } catch (error) {
     const message = error instanceof DOMException && error.name === "AbortError"
