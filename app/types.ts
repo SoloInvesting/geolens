@@ -10,9 +10,33 @@ export type AnalysisIntent =
 
 export type ConfidenceLevel = "high" | "medium" | "low" | "not-assessed";
 
-export type GeoJsonGeometry = {
-  type: "Polygon" | "MultiPolygon" | "Point";
-  coordinates: unknown;
+export type GeoJsonGeometry =
+  | {
+      type: "Polygon" | "MultiPolygon" | "Point";
+      coordinates: unknown;
+    }
+  | {
+      type: "FeatureCollection";
+      features: Array<{
+        type: "Feature";
+        geometry: GeoJsonGeometry | null;
+        properties?: Record<string, unknown>;
+      }>;
+    };
+
+export type ModelExecutionStatus = "completed" | "not-configured" | "blocked" | "failed" | "not-applicable";
+
+export type ModelRun = {
+  id: string | null;
+  name: string;
+  task: string;
+  provider: string;
+  modelCardUrl: string | null;
+  configured: boolean;
+  status: ModelExecutionStatus;
+  message: string;
+  inputRequirement: string;
+  calibratedConfidence: boolean;
 };
 
 export type SceneResult = {
@@ -92,11 +116,6 @@ export type AnalysisResponse = {
   steps: AgentStep[];
   limitations: string[];
   clarification: string | null;
-  model: {
-    configured: boolean;
-    name: string;
-    message: string;
-  };
+  model: ModelRun;
   generatedAt: string;
 };
-

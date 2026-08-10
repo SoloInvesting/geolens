@@ -38,20 +38,28 @@ test("server-renders the GeoLens product", async () => {
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
-test("keeps the independent agent architecture visible in source", async () => {
-  const [page, layout, packageJson, agent, route] = await Promise.all([
+test("keeps the independent agent architecture and model routing visible in source", async () => {
+  const [page, layout, packageJson, agent, modelRouter, route] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../lib/agent.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/model-router.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/analyze/route.ts", import.meta.url), "utf8"),
   ]);
   assert.match(page, /GeoAgentApp/);
   assert.match(layout, /lang="he"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
-  assert.match(agent, /ANALYSIS_MODEL_URL/);
+  assert.match(agent, /runDedicatedModel/);
   assert.match(agent, /sentinel-1-grd/);
   assert.match(agent, /sentinel-2-l2a/);
   assert.match(agent, /eonet\.gsfc\.nasa\.gov/);
+  assert.match(modelRouter, /GEO_MODEL_FLOOD_URL/);
+  assert.match(modelRouter, /GEO_MODEL_BURNSCAR_URL/);
+  assert.match(modelRouter, /GEO_MODEL_VOLCANO_URL/);
+  assert.match(modelRouter, /GEO_MODEL_OBJECT_URL/);
+  assert.match(modelRouter, /prithvi-eo-2.0-sen1floods11/);
+  assert.match(modelRouter, /volcanic-hotspot-rf-s2/);
+  assert.match(modelRouter, /yolo-obb-geospatial/);
   assert.match(route, /analyzeRequest/);
 });

@@ -827,6 +827,21 @@ a {
   border: 2px solid var(--cyan);
 }
 
+.model-warning {
+  background: var(--orange);
+  box-shadow: 0 0 12px rgba(255, 124, 82, 0.35);
+}
+
+.model-failed {
+  border-color: rgba(255, 92, 117, 0.48);
+  background: rgba(255, 92, 117, 0.06);
+}
+
+.model-blocked {
+  border-color: rgba(255, 124, 82, 0.48);
+  background: rgba(255, 124, 82, 0.06);
+}
+
 .model-status strong {
   font-size: 11px;
 }
@@ -836,6 +851,15 @@ a {
   color: var(--muted);
   font-size: 10px;
   line-height: 1.5;
+}
+
+.model-card-link {
+  display: inline-flex;
+  margin-top: 7px;
+  color: var(--cyan);
+  font-size: 10px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .thinking-card {

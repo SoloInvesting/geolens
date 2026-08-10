@@ -2,7 +2,7 @@
 
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import type { AnalysisResponse, SceneResult } from "@/app/types";
+import type { AnalysisResponse, ModelRun, SceneResult } from "@/app/types";
 import { GeoMap } from "./GeoMap";
 
 type ConversationItem =
@@ -50,6 +50,14 @@ function modeLabel(result: AnalysisResponse) {
     "source-only": "ראיית מקור בלבד",
     "not-feasible": "נדרשת רזולוציה אחרת",
   }[result.detectionMode];
+}
+
+function modelStatusLabel(model: ModelRun) {
+  if (model.status === "completed") return "פענוח מודל הושלם";
+  if (model.status === "blocked") return "המודל לא הופעל בגלל מגבלת קלט";
+  if (model.status === "failed") return "שירות המודל לא השלים פענוח";
+  if (model.status === "not-configured") return "מודל ייעודי מוכן לחיבור";
+  return "לא נדרש מודל ייעודי";
 }
 
 function sourceRole(scene: SceneResult) {
@@ -212,11 +220,16 @@ function ResultMessage({ result }: { result: AnalysisResponse }) {
           </section>
         )}
 
-        <div className="model-status">
-          <span className={result.model.configured ? "model-connected" : "model-ready"} />
+        <div className={`model-status model-${result.model.status}`}>
+          <span className={result.model.status === "completed" ? "model-connected" : result.model.status === "not-configured" ? "model-ready" : "model-warning"} />
           <div>
-            <strong>{result.model.configured ? "מנוע זיהוי מחובר" : "מתאם מודל מוכן לחיבור"}</strong>
+            <strong>{modelStatusLabel(result.model)} · {result.model.name}</strong>
             <p>{result.model.message}</p>
+            {result.model.modelCardUrl && (
+              <a className="model-card-link" href={result.model.modelCardUrl} target="_blank" rel="noreferrer">
+                פרטי המודל והקלט הנדרש
+              </a>
+            )}
           </div>
         </div>
       </div>

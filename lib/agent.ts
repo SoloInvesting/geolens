@@ -6,8 +6,10 @@ import type {
   EventEvidence,
   GeoJsonGeometry,
   InterpreterResult,
+  ModelRun,
   SceneResult,
 } from "@/app/types";
+import { runDedicatedModel, selectedModel } from "@/lib/model-router";
 
 type KnownLocation = {
   names: string[];
@@ -413,10 +415,19 @@ function chooseSceneWindow(interpreter: InterpreterResult, events: EventEvidence
   const eventDate = events[0]?.date;
   if (eventDate) {
     const date = new Date(eventDate);
+    if (interpreter.intent === "wildfire") {
+      return { start: toIsoDate(addDays(date, -45)), end: toIsoDate(addDays(date, 30)) };
+    }
     return { start: toIsoDate(addDays(date, -8)), end: toIsoDate(addDays(date, 8)) };
   }
   const end = new Date(interpreter.endDate);
   const span = dateDistanceDays(interpreter.startDate, interpreter.endDate);
+  if (interpreter.intent === "wildfire" && span <= 120) {
+    return {
+      start: toIsoDate(addDays(new Date(interpreter.startDate), -30)),
+      end: toIsoDate(addDays(new Date(interpreter.endDate), 30)),
+    };
+  }
   if (span <= 45) return { start: interpreter.startDate, end: interpreter.endDate };
   return { start: toIsoDate(addDays(end, -30)), end: toIsoDate(end) };
 }
@@ -440,6 +451,50 @@ function sceneInstrument(collection: string, properties: Record<string, unknown>
   return `Sentinel-2 ${instruments.toUpperCase()}`;
 }
 
+function sceneDate(feature: Record<string, unknown>, fallback: string) {
+  const properties = (feature.properties || {}) as Record<string, unknown>;
+  return String(properties.datetime || properties.start_datetime || fallback);
+}
+
+function sceneCloudCover(feature: Record<string, unknown>) {
+  const properties = (feature.properties || {}) as Record<string, unknown>;
+  const cloudCover = Number(properties["eo:cloud_cover"]);
+  return Number.isFinite(cloudCover) ? cloudCover : 50;
+}
+
+function selectSceneFeatures(
+  features: Array<Record<string, unknown>>,
+  interpreter: InterpreterResult,
+  events: EventEvidence[],
+) {
+  const targetDate = events[0]?.date || interpreter.endDate;
+  const byRelevance = [...features].sort((left, right) => (
+    dateDistanceDays(sceneDate(left, targetDate), targetDate) + sceneCloudCover(left) / 20
+    - (dateDistanceDays(sceneDate(right, targetDate), targetDate) + sceneCloudCover(right) / 20)
+  ));
+
+  if (interpreter.intent !== "wildfire") return byRelevance.slice(0, 2);
+
+  const pairTarget = events[0]?.date || toIsoDate(new Date((new Date(interpreter.startDate).getTime() + new Date(interpreter.endDate).getTime()) / 2));
+  const before = features
+    .filter((feature) => new Date(sceneDate(feature, pairTarget)).getTime() < new Date(pairTarget).getTime())
+    .sort((left, right) => (
+      dateDistanceDays(sceneDate(left, pairTarget), pairTarget) + sceneCloudCover(left) / 20
+      - (dateDistanceDays(sceneDate(right, pairTarget), pairTarget) + sceneCloudCover(right) / 20)
+    ));
+  const after = features
+    .filter((feature) => new Date(sceneDate(feature, pairTarget)).getTime() >= new Date(pairTarget).getTime())
+    .sort((left, right) => (
+      dateDistanceDays(sceneDate(left, pairTarget), pairTarget) + sceneCloudCover(left) / 20
+      - (dateDistanceDays(sceneDate(right, pairTarget), pairTarget) + sceneCloudCover(right) / 20)
+    ));
+  if (before[0] && after[0]) return [before[0], after[0]];
+
+  const chronological = [...features].sort((left, right) => new Date(sceneDate(left, pairTarget)).getTime() - new Date(sceneDate(right, pairTarget)).getTime());
+  if (chronological.length >= 2) return [chronological[0], chronological[chronological.length - 1]];
+  return byRelevance.slice(0, 2);
+}
+
 async function queryScenes(
   interpreter: InterpreterResult,
   location: NonNullable<AnalysisResponse["location"]>,
@@ -458,24 +513,14 @@ async function queryScenes(
           collections: [collection],
           bbox: location.bbox,
           datetime: `${window.start}T00:00:00Z/${window.end}T23:59:59Z`,
-          limit: 6,
+          limit: interpreter.intent === "wildfire" ? 24 : 6,
         }),
       });
       if (!response.ok) continue;
       const data = (await response.json()) as { features?: Array<Record<string, unknown>> };
-      const features = data.features || [];
-      const targetDate = events[0]?.date || interpreter.endDate;
-      features.sort((left, right) => {
-        const lp = (left.properties || {}) as Record<string, unknown>;
-        const rp = (right.properties || {}) as Record<string, unknown>;
-        const lCloud = Number(lp["eo:cloud_cover"] ?? 50);
-        const rCloud = Number(rp["eo:cloud_cover"] ?? 50);
-        const lDate = String(lp.datetime || targetDate);
-        const rDate = String(rp.datetime || targetDate);
-        return dateDistanceDays(lDate, targetDate) + lCloud / 20 - (dateDistanceDays(rDate, targetDate) + rCloud / 20);
-      });
+      const features = selectSceneFeatures(data.features || [], interpreter, events);
 
-      for (const feature of features.slice(0, 2)) {
+      for (const feature of features) {
         const properties = (feature.properties || {}) as Record<string, unknown>;
         const assets = (feature.assets || {}) as Record<string, unknown>;
         const links = (feature.links || []) as Array<{ rel?: string; href?: string }>;
@@ -484,7 +529,15 @@ async function queryScenes(
         const publicAssets: Array<{ label: string; href: string }> = [];
         const desiredAssets = collection.includes("sentinel-1")
           ? [["vv", "VV COG"], ["vh", "VH COG"]]
-          : [["B04_10m", "B04 Red"], ["B03_10m", "B03 Green"], ["B02_10m", "B02 Blue"], ["B08_10m", "B08 NIR"], ["B11_20m", "B11 SWIR"]];
+          : [
+              ["B04_10m", "B04 Red"],
+              ["B03_10m", "B03 Green"],
+              ["B02_10m", "B02 Blue"],
+              ["B08_10m", "B08 NIR"],
+              ["B8A_20m", "B08A Narrow NIR"],
+              ["B11_20m", "B11 SWIR1"],
+              ["B12_20m", "B12 SWIR2"],
+            ];
         for (const [key, label] of desiredAssets) {
           const href = publicAsset(assets[key]);
           if (href) publicAssets.push({ label, href });
@@ -570,42 +623,12 @@ async function queryEvents(
   }
 }
 
-async function runModelAdapter(payload: {
-  query: string;
-  interpreter: InterpreterResult;
-  location: NonNullable<AnalysisResponse["location"]>;
-  scenes: SceneResult[];
-}) {
-  const endpoint = process.env.ANALYSIS_MODEL_URL;
-  if (!endpoint) return { configured: false, geometry: null as GeoJsonGeometry | null, confidence: null as number | null, summary: "" };
-  try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(process.env.ANALYSIS_MODEL_TOKEN ? { Authorization: `Bearer ${process.env.ANALYSIS_MODEL_TOKEN}` } : {}),
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) return { configured: true, geometry: null, confidence: null, summary: "שירות הפענוח החזיר תקלה." };
-    const result = (await response.json()) as { geometry?: GeoJsonGeometry; confidence?: number; summary?: string };
-    return {
-      configured: true,
-      geometry: result.geometry || null,
-      confidence: typeof result.confidence === "number" ? result.confidence : null,
-      summary: result.summary || "מודל הפענוח החזיר תוצאה.",
-    };
-  } catch {
-    return { configured: true, geometry: null, confidence: null, summary: "לא ניתן היה להגיע לשירות הפענוח." };
-  }
-}
-
 function buildSteps(
   interpreter: InterpreterResult,
   location: AnalysisResponse["location"],
   scenes: SceneResult[],
   events: EventEvidence[],
-  modelConfigured: boolean,
+  model: ModelRun,
   geometry: GeoJsonGeometry | null,
 ) {
   const steps: AgentStep[] = [
@@ -637,11 +660,15 @@ function buildSteps(
       id: "infer",
       label: "פענוח אובייקטים",
       detail: geometry
-        ? "מודל הפענוח החזיר גאומטריה אמיתית להצגה במפה."
-        : modelConfigured
-          ? "המודל הופעל אך לא החזיר גאומטריה תקפה."
-          : "לא הוגדר עדיין שירות מודל, ולכן המערכת אינה ממציאה פוליגון.",
-      status: geometry ? "completed" : "warning",
+        ? `${model.name} החזיר גאומטריה תקפה להצגה במפה.`
+        : model.status === "blocked"
+          ? model.message
+          : model.status === "not-configured"
+            ? `${model.name} נבחר, אך שירות הפענוח שלו עדיין לא הוגדר.`
+            : model.status === "failed"
+              ? model.message
+              : "לא נבחר מודל ייעודי למשימה זו.",
+      status: geometry ? "completed" : model.status === "blocked" ? "blocked" : "warning",
     },
     {
       id: "verify",
@@ -653,11 +680,21 @@ function buildSteps(
   return steps;
 }
 
-function buildLimitations(intent: AnalysisIntent, scenes: SceneResult[], events: EventEvidence[], geometry: GeoJsonGeometry | null) {
+function buildLimitations(
+  intent: AnalysisIntent,
+  scenes: SceneResult[],
+  events: EventEvidence[],
+  geometry: GeoJsonGeometry | null,
+  model: ModelRun,
+) {
   const limitations: string[] = [];
   if (!scenes.length) limitations.push("לא נמצאה סצנת Sentinel מתאימה בחלון הזמן שנבדק.");
   if (!events.length && ["flood", "wildfire", "volcano"].includes(intent)) limitations.push("לא נמצא דיווח NASA EONET סמוך למקום ולזמן. היעדר דיווח אינו הוכחה שלא התרחש אירוע.");
   if (!geometry) limitations.push("אין פוליגון זיהוי מאומת. המפה מציגה רק אזור חיפוש, טביעת רגל של סצנה ונקודות קטלוגיות.");
+  if (model.status === "not-configured") limitations.push(`נבחר ${model.name}, אך טרם הוגדרה כתובת השירות שלו.`);
+  if (model.status === "blocked") limitations.push(model.message);
+  if (model.status === "failed") limitations.push(`הפעלת ${model.name} לא הושלמה: ${model.message}`);
+  if (geometry && !model.calibratedConfidence) limitations.push("המודל החזיר גאומטריה ללא ציון ביטחון מכויל, ולכן ציון הביטחון מוצג כשמרני.");
   if (intent === "building") limitations.push("Sentinel-2 ברזולוציית 10 מטר אינו מתאים לזיהוי אמין של מבנים בודדים.");
   if (intent === "vessel") limitations.push("Sentinel-1 יכול להצביע על החזר חריג של כלי שיט, אך נדרש AIS או מקור נוסף לזיהוי זהות וסוג.");
   return limitations;
@@ -670,7 +707,8 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
   const recipe = RECIPES[interpreter.intent];
 
   if (!location) {
-    const steps = buildSteps(interpreter, null, [], [], false, null);
+    const model = selectedModel(interpreter.intent);
+    const steps = buildSteps(interpreter, null, [], [], model, null);
     return {
       ok: false,
       query: cleanedQuery,
@@ -688,16 +726,19 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
       steps,
       limitations: ["לא ניתן להריץ פענוח ללא אזור חיפוש."],
       clarification: "באיזה מקום או אזור לבצע את הניתוח? אפשר לכתוב עיר, מדינה או קואורדינטות.",
-      model: { configured: false, name: "GeoLens inference adapter", message: "לא הופעל לפני פתרון מקום." },
+      model: {
+        ...model,
+        message: "לא הופעל לפני פתרון מקום.",
+      },
       generatedAt: new Date().toISOString(),
     };
   }
 
   const events = await queryEvents(interpreter, location);
   const scenes = await queryScenes(interpreter, location, events);
-  const modelResult = await runModelAdapter({ query: cleanedQuery, interpreter, location, scenes });
+  const modelResult = await runDedicatedModel({ query: cleanedQuery, interpreter, location, scenes, events });
   const geometry = modelResult.geometry;
-  const resolutionBlocked = interpreter.intent === "building";
+  const resolutionBlocked = modelResult.model.id === "yolo-obb-geospatial" && modelResult.model.status === "blocked";
   const detectionMode = resolutionBlocked
     ? "not-feasible"
     : geometry
@@ -708,7 +749,7 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
   const confidenceScore = resolutionBlocked
     ? 0.18
     : geometry
-      ? Math.max(0, Math.min(modelResult.confidence ?? 0.82, 1))
+      ? Math.max(0, Math.min(modelResult.confidence ?? 0.6, 1))
       : events.length && scenes.length
         ? 0.74
         : scenes.length
@@ -718,12 +759,14 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
   const verdict = resolutionBlocked
     ? "הבקשה דורשת דימות ברזולוציה גבוהה יותר מ-Sentinel. הסוכן עצר לפני יצירת זיהוי מטעה."
     : geometry
-      ? "הוחזרה גאומטריית זיהוי ממודל חיצוני, לצד סצנות המקור והראיות."
+      ? `הוחזרה גאומטריית זיהוי מ-${modelResult.model.name}, לצד סצנות המקור והראיות.`
+      : modelResult.model.status === "blocked"
+        ? `המודל שנבחר לא הופעל: ${modelResult.model.message}`
       : events.length
         ? `נמצא אירוע קטלוגי מתאים ו-${scenes.length} סצנות מקור. עדיין אין מסכת אובייקטים ממודל.`
         : `נמצאו ${scenes.length} סצנות מקור, אך אין כרגע ראיה מספקת לקבוע שהאובייקט או האירוע זוהה.`;
   const answer = `${recipe.title} עבור ${location.name}. הסוכן בחר ב-${recipe.primarySensor}, בדק את הטווח ${interpreter.dateLabel}, ואסף ${scenes.length} סצנות ו-${events.length} רשומות אירוע. ${verdict}`;
-  const steps = buildSteps(interpreter, location, scenes, events, modelResult.configured, geometry);
+  const steps = buildSteps(interpreter, location, scenes, events, modelResult.model, geometry);
 
   return {
     ok: true,
@@ -740,13 +783,9 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
     events,
     detectionGeometry: geometry,
     steps,
-    limitations: buildLimitations(interpreter.intent, scenes, events, geometry),
+    limitations: buildLimitations(interpreter.intent, scenes, events, geometry, modelResult.model),
     clarification: null,
-    model: {
-      configured: modelResult.configured,
-      name: "GeoLens inference adapter",
-      message: modelResult.configured ? modelResult.summary : "האפליקציה מוכנה לחיבור Prithvi, ONNX או שירות זיהוי פרטי דרך ANALYSIS_MODEL_URL.",
-    },
+    model: modelResult.model,
     generatedAt: new Date().toISOString(),
   };
 }
