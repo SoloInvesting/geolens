@@ -56,17 +56,68 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
       const sceneLayer = L.layerGroup().addTo(map);
       const scenePreviewLayer = L.layerGroup().addTo(map);
 
-      L.control
-        .layers(
-          { "רקע לווייני Esri": satellite, "מפת רחובות": street },
-          {
-            "Quicklook של הסצנה שנבחרה": scenePreviewLayer,
-            "טביעת רגל של סצנות": sceneLayer,
-            "אירועים וזיהויים": evidenceLayer,
-          },
-          { position: "topleft", collapsed: true },
-        )
-        .addTo(map);
+      const basemapControl = new L.Control({ position: "topleft" });
+      const basemapTemplate = {
+        satellite: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        street: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      };
+      const tilePreviewUrl = (template: string) => {
+        const zoom = Math.max(2, Math.min(18, Math.round(map.getZoom())));
+        const point = map.project(map.getCenter(), zoom).divideBy(256).floor();
+        const tileCount = 2 ** zoom;
+        const x = ((point.x % tileCount) + tileCount) % tileCount;
+        const y = Math.max(0, Math.min(tileCount - 1, point.y));
+        return template
+          .replace("{z}", String(zoom))
+          .replace("{x}", String(x))
+          .replace("{y}", String(y))
+          .replace("{s}", "a");
+      };
+
+      const refreshBasemapControl = (button: HTMLButtonElement, preview: HTMLElement, label: HTMLElement) => {
+        const satelliteActive = map.hasLayer(satellite);
+        const nextMode = satelliteActive ? "מפה" : "תצלום לוויין";
+        button.setAttribute("aria-label", `עבור ל${nextMode}`);
+        button.title = `עבור ל${nextMode}`;
+        button.dataset.currentMode = satelliteActive ? "satellite" : "map";
+        preview.style.backgroundImage = `url("${tilePreviewUrl(satelliteActive ? basemapTemplate.street : basemapTemplate.satellite)}")`;
+        label.textContent = nextMode;
+      };
+
+      basemapControl.onAdd = () => {
+        const container = L.DomUtil.create("div", "basemap-switcher leaflet-bar");
+        const button = L.DomUtil.create("button", "basemap-switcher-button", container) as HTMLButtonElement;
+        button.type = "button";
+        const preview = L.DomUtil.create("span", "basemap-switcher-preview", button);
+        const copy = L.DomUtil.create("span", "basemap-switcher-copy", button);
+        const eyebrow = L.DomUtil.create("span", "basemap-switcher-eyebrow", copy);
+        eyebrow.textContent = "רקע הבא";
+        const label = L.DomUtil.create("strong", "basemap-switcher-label", copy);
+        const hint = L.DomUtil.create("small", "basemap-switcher-hint", copy);
+        hint.textContent = "לחץ להחלפה";
+        const refresh = () => refreshBasemapControl(button, preview, label);
+        const toggle = () => {
+          if (map.hasLayer(satellite)) {
+            map.removeLayer(satellite);
+            street.addTo(map);
+          } else {
+            map.removeLayer(street);
+            satellite.addTo(map);
+          }
+          refresh();
+        };
+        button.addEventListener("click", toggle);
+        map.on("moveend zoomend", refresh);
+        L.DomEvent.disableClickPropagation(container);
+        L.DomEvent.disableScrollPropagation(container);
+        refresh();
+        basemapControl.onRemove = () => {
+          button.removeEventListener("click", toggle);
+          map.off("moveend zoomend", refresh);
+        };
+        return container;
+      };
+      basemapControl.addTo(map);
 
       if (analysis?.location) {
         const [west, south, east, north] = analysis.location.bbox;

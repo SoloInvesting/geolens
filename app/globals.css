@@ -786,6 +786,85 @@ a {
   font-size: 10px;
 }
 
+.basemap-switcher {
+  margin-top: 10px !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.basemap-switcher-button {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  align-items: stretch;
+  width: 158px;
+  min-height: 66px;
+  padding: 4px;
+  gap: 8px;
+  border: 1px solid rgba(231, 246, 241, 0.42);
+  border-radius: 13px;
+  color: var(--ink);
+  background: rgba(7, 18, 17, 0.84);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  direction: ltr;
+  text-align: left;
+  backdrop-filter: blur(16px) saturate(1.2);
+  transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
+}
+
+.basemap-switcher-button:hover,
+.basemap-switcher-button:focus-visible {
+  border-color: var(--lime);
+  background: rgba(7, 18, 17, 0.94);
+  transform: translateY(-1px);
+}
+
+.basemap-switcher-button:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}
+
+.basemap-switcher-preview {
+  display: block;
+  min-height: 56px;
+  border-radius: 9px;
+  background-color: #17312c;
+  background-position: center;
+  background-size: cover;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+.basemap-switcher-copy {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  min-width: 0;
+  direction: rtl;
+  text-align: right;
+}
+
+.basemap-switcher-eyebrow {
+  color: var(--lime);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.basemap-switcher-label {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.basemap-switcher-hint {
+  color: var(--muted);
+  font-size: 8px;
+}
+
 .leaflet-popup-content {
   min-width: 170px;
   color: var(--ink);
@@ -899,6 +978,20 @@ a {
 
   .leaflet-top.leaflet-right {
     top: 54px;
+  }
+
+  .basemap-switcher {
+    margin-top: 8px !important;
+  }
+
+  .basemap-switcher-button {
+    grid-template-columns: 56px minmax(0, 1fr);
+    width: 142px;
+    min-height: 58px;
+  }
+
+  .basemap-switcher-preview {
+    min-height: 48px;
   }
 
   .chat-is-open .leaflet-bottom.leaflet-left {
