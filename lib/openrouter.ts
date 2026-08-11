@@ -441,6 +441,14 @@ export async function writeAnalysisNarrative(input: NarrativeInput) {
   const fallbackAnswer = cleanText(input.fallbackAnswer, 2_400);
   const apiKey = configuredApiKey();
   if (!apiKey) return { answer: fallbackAnswer, brain: null as BrainRun | null };
+  const fallback = (message: string, actualModel: string | null = null) => ({
+    answer: fallbackAnswer,
+    brain: brainState({
+      actualModel,
+      status: "fallback",
+      message,
+    }),
+  });
 
   const verifiedFacts = {
     location: input.locationName,
@@ -511,15 +519,15 @@ export async function writeAnalysisNarrative(input: NarrativeInput) {
       }),
     });
 
-    if (!response.ok) return { answer: fallbackAnswer, brain: null as BrainRun | null };
+    if (!response.ok) return fallback(`ניסוח התשובה החיצוני נכשל בקוד ${response.status}; הוצגה תשובת ראיות מקומית.`);
     const result = (await response.json()) as OpenRouterResponse;
     const actualModel = typeof result.model === "string" ? result.model : null;
     const reportedCost = typeof result.usage?.cost === "number" ? result.usage.cost : null;
-    if (reportedCost !== null && reportedCost > 0) return { answer: fallbackAnswer, brain: null as BrainRun | null };
+    if (reportedCost !== null && reportedCost > 0) return fallback("התשובה החיצונית נדחתה משום שדווחה עלות שאינה אפס.", actualModel);
     const answer = parseNarrativePayload(messageContent(result.choices?.[0]?.message?.content));
-    if (!answer || answer.length < 20 || !narrativeIsGrounded(answer, input)) {
-      return { answer: fallbackAnswer, brain: null as BrainRun | null };
-    }
+    if (!answer) return fallback("המודל החינמי לא החזיר את מבנה התשובה המחייב; הוצגה תשובת ראיות מקומית.", actualModel);
+    if (answer.length < 20) return fallback("תשובת המודל החינמי הייתה קצרה מכדי להיות שימושית; הוצגה תשובת ראיות מקומית.", actualModel);
+    if (!narrativeIsGrounded(answer, input)) return fallback("תשובת המודל החינמי לא עברה את בדיקת הביסוס; הוצגה תשובת ראיות מקומית.", actualModel);
 
     const requiredAdditions = [
       input.findingStatus === "indeterminate" && !statesUncertainty(answer)
@@ -543,8 +551,11 @@ export async function writeAnalysisNarrative(input: NarrativeInput) {
         message: `התשובה נוסחה באמצעות ${actualModel || "מודל חינמי"}, מתוך מאגר מודלים ללא עלות ועל בסיס עובדות שאומתו ב-GeoLens.`,
       }),
     };
-  } catch {
-    return { answer: fallbackAnswer, brain: null as BrainRun | null };
+  } catch (error) {
+    const message = error instanceof DOMException && error.name === "AbortError"
+      ? "המודלים החינמיים לא השיבו בזמן; הוצגה תשובת ראיות מקומית."
+      : "לא ניתן היה להשלים את ניסוח התשובה החיצוני; הוצגה תשובת ראיות מקומית.";
+    return fallback(message);
   } finally {
     clearTimeout(timeout);
   }
