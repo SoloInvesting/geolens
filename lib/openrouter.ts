@@ -185,15 +185,11 @@ function narrativeIsGrounded(answer: string, input: NarrativeInput) {
     if (hebrewCharacters < 20 || latinCharacters > hebrewCharacters * 0.45) return false;
   }
 
-  if (input.findingStatus === "indeterminate") {
-    const statesUncertainty = /לא ניתן (?:לקבוע|להכריע)|אין (?:די|מספיק) (?:ראיות|מידע)|אין ראיה מספקת|המסקנה אינה ודאית|cannot determine|insufficient evidence|not enough evidence/i.test(normalized);
-    if (!statesUncertainty) return false;
-  }
+  if (input.findingStatus === "indeterminate"
+    && /(?:זוהה|זוהתה|אותר|אותרה|נמצא|נמצאה|detected|confirmed).{0,80}(?:שריפ|הצפ|התפרצות|לבה|מבנ|כלי שיט|גידול|fire|flood|volcan|building|vessel|crop)/iu.test(normalized)) return false;
 
-  if (!input.model.realModelRun) {
-    const statesNoModelRun = /לא (?:בוצע|הופעל|נערך) (?:פענוח|ניתוח|מודל)|לא הייתה ריצת מודל|לא בוצעה ריצת מודל|no (?:pixel )?(?:model|inference) (?:was )?run|model (?:was )?not run|inference (?:was )?not performed/i.test(normalized);
-    if (!statesNoModelRun) return false;
-  }
+  if (!input.model.realModelRun
+    && /(?:המודל|הפענוח|הניתוח|model|inference).{0,60}(?:זיהה|איתָר|איתר|מצא|קבע|detected|found|confirmed)/iu.test(normalized)) return false;
 
   if (input.findingStatus === "not-detected" && !input.model.realModelRun) return false;
   const allowedSensors = input.scenes
@@ -205,6 +201,14 @@ function narrativeIsGrounded(answer: string, input: NarrativeInput) {
       && !aliases.some((sensor) => allowedSensors.includes(sensor))) return false;
   }
   return true;
+}
+
+function statesUncertainty(answer: string) {
+  return /לא ניתן (?:לקבוע|להכריע)|אין (?:די|מספיק) (?:ראיות|מידע)|אין ראיה מספקת|המסקנה אינה ודאית|cannot determine|insufficient evidence|not enough evidence/i.test(answer);
+}
+
+function statesNoModelRun(answer: string) {
+  return /לא (?:בוצע|הופעל|נערך) (?:פענוח|ניתוח|מודל)|לא הייתה ריצת מודל|לא בוצעה ריצת מודל|no (?:pixel )?(?:model|inference) (?:was )?run|model (?:was )?not run|inference (?:was )?not performed/i.test(answer);
 }
 
 function parsePlannerPayload(content: string): PlannerPayload | null {
@@ -517,7 +521,14 @@ export async function writeAnalysisNarrative(input: NarrativeInput) {
       return { answer: fallbackAnswer, brain: null as BrainRun | null };
     }
 
-    const requiredAdditions = [input.clarification, input.limitations[0]].filter(
+    const requiredAdditions = [
+      input.findingStatus === "indeterminate" && !statesUncertainty(answer)
+        ? "אין ראיה מספקת לקבוע אם היעד קיים."
+        : null,
+      !input.model.realModelRun && !statesNoModelRun(answer) ? "לא בוצע פענוח פיקסלים." : null,
+      input.clarification,
+      input.limitations[0],
+    ].filter(
       (item): item is string => Boolean(item) && !answer.includes(item as string),
     );
     const finalAnswer = [answer, ...requiredAdditions].join("\n\n");

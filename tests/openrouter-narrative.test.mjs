@@ -42,8 +42,8 @@ test("accepts a grounded free-model narrative and rejects an unsafe one", async 
         choices: [{
           message: {
             content: unsafe
-              ? "זוהתה שריפה בוודאות של 98% באמצעות Sentinel-2."
-              : JSON.stringify({ answer: "לא ניתן לקבוע אם התרחשו שריפות בכל ספרד מהקלט הזמין. לא בוצע פענוח פיקסלים, ולכן נדרש אזור חיפוש מצומצם יותר." }),
+              ? JSON.stringify({ answer: "זוהתה שריפה בספרד." })
+              : JSON.stringify({ answer: "הבקשה מתייחסת לכל שטח ספרד, ולכן יש לצמצם אותה למחוז או לעיר לפני ניתוח אמין." }),
           },
         }],
       });
@@ -56,7 +56,7 @@ test("accepts a grounded free-model narrative and rejects an unsafe one", async 
     const worker = await loadWorker();
     const safe = await analyze(worker, "תאתר שריפות בספרד בשנה האחרונה");
     assert.equal(safe.brain.provider, "OpenRouter");
-    assert.match(safe.answer, /לא ניתן לקבוע/);
+    assert.match(safe.answer, /אין ראיה מספקת|לא ניתן לקבוע/);
     assert.match(safe.answer, /לא בוצע פענוח פיקסלים/);
     assert.equal(requests, 1);
     assert.ok(openRouterBodies[0].models.length >= 2);
@@ -68,7 +68,7 @@ test("accepts a grounded free-model narrative and rejects an unsafe one", async 
 
     unsafe = true;
     const rejected = await analyze(worker, "תאתר שריפות בספרד בשנת 2025");
-    assert.doesNotMatch(rejected.answer, /98%|זוהתה שריפה בוודאות/);
+    assert.doesNotMatch(rejected.answer, /זוהתה שריפה בספרד/);
     assert.match(rejected.answer, /לא בוצע פענוח פיקסלים/);
     assert.equal(requests, 2);
   } finally {
