@@ -33,11 +33,13 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
         ? [analysis.location.latitude, analysis.location.longitude]
         : [31.6, 34.9];
       const map = L.map(containerRef.current, {
-        zoomControl: true,
-        attributionControl: true,
+        zoomControl: false,
+        attributionControl: false,
         scrollWheelZoom: window.matchMedia("(pointer: fine) and (min-width: 981px)").matches,
       }).setView(center, analysis?.location ? 9 : 5);
       mapRef.current = map;
+      L.control.zoom({ position: "topleft" }).addTo(map);
+      L.control.attribution({ position: "bottomleft" }).addTo(map);
 
       const satellite = L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -62,7 +64,7 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
             "טביעת רגל של סצנות": sceneLayer,
             "אירועים וזיהויים": evidenceLayer,
           },
-          { position: "topright", collapsed: true },
+          { position: "topleft", collapsed: true },
         )
         .addTo(map);
 

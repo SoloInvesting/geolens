@@ -10,7 +10,7 @@ import type {
   SceneResult,
 } from "@/app/types";
 import { runDedicatedModel, selectedModel } from "@/lib/model-router";
-import { planWithOpenRouter } from "@/lib/openrouter";
+import { planWithOpenRouter, writeAnalysisNarrative } from "@/lib/openrouter";
 import { querySatelliteScenes } from "@/lib/data-broker";
 import { buildMissionSpec } from "@/lib/mission";
 import { assessFeasibility, type ModelObservation } from "@/lib/feasibility";
@@ -1235,9 +1235,44 @@ export async function analyzeRequest(
   const evidenceCollectionStatement = oversizedSpecialistAoi
     ? "חיפוש הסצנות נעצר לפני פנייה לקטלוגים, משום שה-AOI גדול מדי לפענוח אמין בכיסוי חלקי."
     : `נמצאו ${scenes.length} סצנות, מתוכן ${analysisReadyCount} כשירות לניתוח, וכן ${events.length} רשומות אירוע.`;
-  const answer = `${recipe.title} עבור ${location.name}. הסוכן בחר ב-${recipe.primarySensor} ובדק את הטווח ${interpreter.dateLabel}. ${evidenceCollectionStatement} ${modelExecutionStatement} ${verdict}`;
+  const actualSensors = [...new Set(scenes.map((scene) => scene.instrument).filter(Boolean))];
+  const sensorStatement = actualSensors.length
+    ? `סצנות המקור שנמצאו צולמו באמצעות ${actualSensors.join(", ")}.`
+    : `${recipe.primarySensor} הוא החיישן המומלץ למשימה, אך לא נמצאה סצנת מקור מתאימה.`;
+  const fallbackAnswer = `${recipe.title} עבור ${location.name}, בטווח ${interpreter.dateLabel}. ${sensorStatement} ${evidenceCollectionStatement} ${modelExecutionStatement} ${verdict}`;
   const steps = buildSteps(interpreter, location, scenes, events, modelResult.model, geometry, oversizedSpecialistAoi);
   const limitations = buildLimitations(interpreter.intent, scenes, events, geometry, modelResult.model, oversizedSpecialistAoi);
+  const clarification = feasibility.checks.some((check) => check.code === "AOI_TOO_LARGE" && check.status === "fail")
+    ? `המקום ${location.name} זוהה בהצלחה, אך זהו אזור גדול מדי לפענוח מלא במספר מצומצם של סצנות. ציין מחוז, עיר, שמורה או קואורדינטות בתוך האזור.`
+    : null;
+  const narrative = await writeAnalysisNarrative({
+    query: cleanedQuery,
+    fallbackAnswer,
+    locationName: location.name,
+    intentLabel: interpreter.intentLabel,
+    dateLabel: interpreter.dateLabel,
+    findingStatus,
+    feasibilityStatus: feasibility.status,
+    verdict,
+    clarification,
+    scenes: scenes.map((scene) => ({
+      instrument: scene.instrument,
+      platform: scene.platform,
+      datetime: scene.datetime,
+      role: scene.role,
+      catalog: scene.catalog,
+    })),
+    eventCount: events.length,
+    model: {
+      name: modelResult.model.name,
+      status: modelResult.model.status,
+      realModelRun: feasibility.realModelRun,
+      detected: modelResult.model.detected,
+    },
+    limitations,
+  });
+  const answer = narrative.answer;
+  if (narrative.brain) brain = narrative.brain;
   const ledger = buildEvidenceLedger({
     query: cleanedQuery,
     mission,
@@ -1268,9 +1303,7 @@ export async function analyzeRequest(
     detectionGeometry: geometry,
     steps,
     limitations,
-    clarification: feasibility.checks.some((check) => check.code === "AOI_TOO_LARGE" && check.status === "fail")
-      ? `המקום ${location.name} זוהה בהצלחה, אך זהו אזור גדול מדי לפענוח מלא במספר מצומצם של סצנות. ציין מחוז, עיר, שמורה או קואורדינטות בתוך האזור.`
-      : null,
+    clarification,
     brain,
     model: modelResult.model,
     mission,
