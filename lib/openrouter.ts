@@ -350,6 +350,9 @@ export async function planWithOpenRouter(
           type: "json_schema",
           json_schema: plannerSchema(),
         },
+        provider: {
+          require_parameters: true,
+        },
         messages: [
           {
             role: "system",
@@ -463,6 +466,9 @@ export async function writeAnalysisNarrative(input: NarrativeInput) {
         response_format: {
           type: "json_schema",
           json_schema: narrativeSchema(),
+        },
+        provider: {
+          require_parameters: true,
         },
         messages: [
           {
