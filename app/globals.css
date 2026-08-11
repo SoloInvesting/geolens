@@ -1419,6 +1419,13 @@ a {
   border-top-color: var(--lime);
 }
 
+.legend-preview {
+  border-top-style: solid;
+  border-top-width: 5px;
+  border-top-color: #7dd3fc;
+  opacity: 0.75;
+}
+
 .legend-model {
   border-top-style: solid;
   border-top-width: 3px;

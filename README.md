@@ -65,36 +65,74 @@ GEO_MODEL_VOLCANO_URL=https://inference.example.com/v1/infer
 GEO_MODEL_OPEN_VOCAB_URL=https://inference.example.com/v1/infer
 GEO_MODEL_VESSEL_URL=https://inference.example.com/v1/infer
 GEO_MODEL_TOKEN=replace-with-a-secret
+GEO_MODEL_ALLOWED_ORIGINS=https://inference.example.com
 ```
 
-לפרסום, מגדירים את אותם משתנים בסביבת הייצור של האתר. אין לשמור מפתחות בקוד, ב-Git או בדפדפן.
+`GEO_MODEL_ALLOWED_ORIGINS` הוא חסם חובה. יש לרשום בו origins מדויקים, מופרדים בפסיקים. כתובת שלא ברשימה, כתובת עם credentials, כתובת רשת פרטית או HTTP מחוץ ל-`localhost` תיחסם. לפרסום, מגדירים את אותם משתנים בסביבת הייצור של האתר. אין לשמור מפתחות בקוד, ב-Git או בדפדפן.
+
+השירות הנייד נמצא בתיקייה `services/inference`. ברירת המחדל שלו היא backend מסוג `mock` שמאמת את החוזה בלבד ומחזיר תמיד `inconclusive`. הוא אינו מוצג כשירות פענוח פעיל. חיבור אמיתי דורש backend שטוען משקלים, מחזיר `/ready` עם `inferenceEnabled: true`, וחשוף ב-HTTPS מאובטח.
+
+### שימוש ב-GPU של VEDA
+
+פרופיל NVIDIA T4 ב-VEDA מתאים להרצת service container או סביבת Python של המודל. עם זאת, Jupyter Server Proxy מוגן בהתחברות ל-JupyterHub, ולכן Cloudflare Worker ציבורי אינו יכול לקרוא אותו ישירות. החיבור המקצועי הוא שירות HTTPS בעל כתובת יציבה, Bearer token ו-allowlist, שמפנה ל-container על ה-GPU. קישור זמני של Gradio או tunnel ללא ניהול זהויות אינו חיבור ייצור.
+
+כאשר קיים ingress מאושר, מריצים את השירות על ה-T4, מגדירים `GEOLENS_INFERENCE_TOKEN`, מוודאים ש-`/ready` מחזיר `inferenceEnabled: true`, ורק אז מוסיפים את ה-origin ל-`GEO_MODEL_ALLOWED_ORIGINS` ואת `/v1/infer` למשתנה המסלול המתאים.
 
 ## חוזה GeoLens Inference v1
 
-כל כתובת מודל מקבלת בקשת `POST` עם כותרות `Content-Type: application/json`, `X-GeoLens-Contract: geolens-inference/v1` ו-`X-GeoLens-Model`.
+כל כתובת מודל מקבלת בקשת `POST` עם כותרות `Content-Type: application/json`, `X-GeoLens-Contract: geolens-inference/v1`, `X-GeoLens-Model` ו-`Idempotency-Key` הזהה ל-`requestId`. לפני הפענוח הנתב קורא ל-`/ready` ודורש גם `ready: true` וגם `inferenceEnabled: true`.
 
-דוגמת קלט מקוצרת:
+דוגמת קלט מינימלית תקפה:
 
 ```json
 {
-  "requestId": "uuid",
+  "requestId": "c126c033-9f39-42d0-9bc4-53bd410ca236",
   "model": {
     "id": "prithvi-eo-2.0-sen1floods11",
-    "task": "סגמנטציית הצפות"
+    "version": "300m-sen1floods11-v1",
+    "task": "סגמנטציית הצפות",
+    "modelCardUrl": "https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11"
   },
+  "query": "מפה הצפה בניו אורלינס ב-15 באוגוסט 2023",
   "intent": "flood",
   "dateRange": {
     "startDate": "2023-08-10",
     "endDate": "2023-08-20"
   },
+  "requestedObjects": ["מים חדשים", "גבול הצפה"],
   "location": {
     "name": "New Orleans, Louisiana, USA",
+    "latitude": 29.9511,
+    "longitude": -90.0715,
     "bbox": [-90.35, 29.75, -89.75, 30.18]
   },
   "scenes": [
     {
-      "stacUrl": "https://...",
-      "assets": [{ "label": "B04 Red", "href": "https://..." }]
+      "id": "scene-1",
+      "collection": "sentinel-2-l2a",
+      "datetime": "2023-08-15T16:45:20Z",
+      "resolution": "10 meters",
+      "bbox": [-90.35, 29.75, -89.75, 30.18],
+      "geometry": null,
+      "stacUrl": "https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a/items/scene-1",
+      "catalog": "Element 84 Earth Search",
+      "assetAccess": "public-http",
+      "license": {
+        "licenseId": "proprietary",
+        "commercialUse": null,
+        "redistribution": null,
+        "attributionRequired": null,
+        "sourceProvider": "Element 84",
+        "sourceItemId": "scene-1",
+        "termsUrl": "https://registry.opendata.aws/sentinel-2-l2a-cogs/",
+        "note": "Verify source terms before redistribution."
+      },
+      "assets": [
+        {
+          "label": "B04 Red",
+          "href": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/example/B04.tif"
+        }
+      ]
     }
   ]
 }
@@ -104,18 +142,36 @@ GEO_MODEL_TOKEN=replace-with-a-secret
 
 ```json
 {
+  "contract": "geolens-inference/v1",
+  "requestId": "c126c033-9f39-42d0-9bc4-53bd410ca236",
+  "runId": "365ad3fe-fc37-40df-b9a7-7178963585f4",
+  "model": {
+    "id": "prithvi-eo-2.0-sen1floods11",
+    "version": "300m-sen1floods11-v1",
+    "backend": "prithvi"
+  },
   "detected": true,
+  "outcome": "positive",
   "geometry": {
     "type": "Polygon",
     "coordinates": [[[-90.1, 29.9], [-90.0, 29.9], [-90.0, 30.0], [-90.1, 29.9]]]
   },
   "confidence": 0.84,
   "confidenceCalibrated": true,
-  "summary": "שטח מוצף שזוהה לאחר סינון מים קבועים."
+  "summary": "שטח מוצף שזוהה לאחר סינון מים קבועים.",
+  "warnings": [],
+  "provenance": {
+    "backend": "prithvi",
+    "backendVersion": "1.0.0",
+    "modelId": "prithvi-eo-2.0-sen1floods11",
+    "sceneIds": ["scene-1"],
+    "startedAt": "2026-08-11T14:00:00Z",
+    "completedAt": "2026-08-11T14:00:12Z"
+  }
 }
 ```
 
-התגובה יכולה להכיל גם `FeatureCollection` עבור זיהויי אובייקטים מרובים. תשובה שלילית מותרת כ-`{"detected": false}` ללא גאומטריה, אבל הממשק יציג "לא זוהה" רק אם כל תנאי ההיתכנות עברו ורשומת הריצה מלאה. בכל מצב אחר התוצאה היא "לא ניתן לקבוע".
+התגובה יכולה להכיל גם `FeatureCollection` עבור זיהויי אובייקטים מרובים. תשובה שלילית חייבת לכלול את כל שדות החוזה, להשתמש ב-`detected: false`, ב-`outcome: "negative"` וב-`geometry: null`. הממשק יציג "לא זוהה" רק אם כל תנאי ההיתכנות עברו ורשומת הריצה מלאה. בכל מצב אחר התוצאה היא "לא ניתן לקבוע".
 
 משקלים פתוחים אינם שירות הסקה חינמי. האפליקציה מכינה חוזה חיבור ל-Prithvi, Grounding DINO + SAM 2.1 ו-xView3, אך אינה מציגה אותם כפעילים עד שהוגדרה כתובת שירות אמיתית.
 

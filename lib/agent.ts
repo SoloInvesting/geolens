@@ -18,6 +18,7 @@ import { tryMeasureGeometry } from "@/lib/gis";
 import { buildEvidenceLedger } from "@/lib/evidence";
 import {
   extractLocationCandidate,
+  inferIntentFromQuery,
   isPlausibleLocationCandidate,
   parseCoordinatePair,
   parseDateRange,
@@ -230,18 +231,6 @@ function includesAny(query: string, terms: string[]) {
   return terms.some((term) => query.includes(term));
 }
 
-function inferIntent(query: string): AnalysisIntent {
-  const normalized = query.toLowerCase();
-  if (includesAny(normalized, ["הר געש", "הרי געש", "געשי", "געשית", "וולקני", "התפרצות", "התפרצויות", "לבה", "אפר געשי", "volcano", "volcanic", "eruption", "lava", "ash plume"])) return "volcano";
-  if (includesAny(normalized, ["הצפה", "הצפות", "שיטפון", "שטפונות", "flood", "inundation", "standing water"])) return "flood";
-  if (includesAny(normalized, ["שריפה", "שריפות", "צלקת שריפה", "שטח שרוף", "wildfire", "burn scar", "active fire", "smoke plume"])) return "wildfire";
-  if (includesAny(normalized, ["ספינה", "ספינות", "כלי שיט", "אונייה", "ship", "vessel", "boat"])) return "vessel";
-  if (includesAny(normalized, ["בניין", "בניינים", "מבנים", "בית", "building", "rooftop", "structure"])) return "building";
-  if (includesAny(normalized, ["גידול", "גידולים", "חקלא", "יבול", "crop", "agriculture", "vegetation health"])) return "crop";
-  if (includesAny(normalized, ["שינוי", "לפני ואחרי", "השתנה", "change", "before and after", "difference"])) return "change";
-  return "imagery";
-}
-
 function intentLabel(intent: AnalysisIntent) {
   return {
     flood: "הצפה",
@@ -313,6 +302,8 @@ const GEOCODE_CACHE_LIMIT = 200;
 const geocodeCache = new Map<string, { expiresAt: number; value: ResolvedLocation | null }>();
 const EVENT_CACHE_TTL_MS = 5 * 60 * 1_000;
 const EVENT_TIMEOUT_MS = 6_000;
+const DAY_MS = 86_400_000;
+const MAX_TEMPORAL_TILES = 6;
 const eventCache = new Map<string, { expiresAt: number; promise: Promise<EventEvidence[]> }>();
 
 function normalizedLocationText(value: string) {
@@ -419,7 +410,7 @@ function trimGeocodeCache() {
 }
 
 function buildInterpreter(query: string, referenceDate: string): InterpreterResult {
-  const intent = inferIntent(query);
+  const intent = inferIntentFromQuery(query);
   const dates = parseDateRange(query, new Date(`${referenceDate}T12:00:00Z`));
   const known = findKnownLocation(query);
   return {
@@ -513,20 +504,53 @@ export async function resolveLocation(locationText: string, query: string, alter
 }
 
 function dateDistanceDays(a: string, b: string) {
-  return Math.abs(new Date(a).getTime() - new Date(b).getTime()) / 86_400_000;
+  return Math.abs(new Date(a).getTime() - new Date(b).getTime()) / DAY_MS;
+}
+
+type CatalogWindow = { start: string; end: string; target: string };
+
+function temporalTileCount(totalDays: number, maximum = MAX_TEMPORAL_TILES) {
+  const tieredCount = totalDays <= 45
+    ? 1
+    : totalDays <= 120
+      ? 2
+      : totalDays <= 240
+        ? 3
+        : totalDays <= 400
+          ? 4
+          : totalDays <= 730
+            ? 5
+            : MAX_TEMPORAL_TILES;
+  return Math.max(1, Math.min(tieredCount, maximum));
+}
+
+function temporalCatalogWindows(startDate: string, endDate: string, maximum = MAX_TEMPORAL_TILES): CatalogWindow[] {
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const totalDays = Math.max(1, Math.floor((end.getTime() - start.getTime()) / DAY_MS) + 1);
+  const count = temporalTileCount(totalDays, maximum);
+
+  return Array.from({ length: count }, (_, index) => {
+    const firstOffset = Math.floor(index * totalDays / count);
+    const nextOffset = Math.floor((index + 1) * totalDays / count);
+    const lastOffset = Math.max(firstOffset, nextOffset - 1);
+    const windowStart = addDays(start, firstOffset);
+    const windowEnd = addDays(start, lastOffset);
+    const target = addDays(windowStart, Math.floor((lastOffset - firstOffset) / 2));
+    return { start: toIsoDate(windowStart), end: toIsoDate(windowEnd), target: toIsoDate(target) };
+  });
 }
 
 function chooseSceneWindow(interpreter: InterpreterResult, events: EventEvidence[]) {
+  const span = dateDistanceDays(interpreter.startDate, interpreter.endDate);
   const eventDate = events[0]?.date;
-  if (eventDate) {
+  if (eventDate && span <= 45) {
     const date = new Date(eventDate);
     if (interpreter.intent === "wildfire") {
       return { start: toIsoDate(addDays(date, -45)), end: toIsoDate(addDays(date, 30)) };
     }
     return { start: toIsoDate(addDays(date, -8)), end: toIsoDate(addDays(date, 8)) };
   }
-  const end = new Date(interpreter.endDate);
-  const span = dateDistanceDays(interpreter.startDate, interpreter.endDate);
   if (interpreter.intent === "wildfire" && span <= 120) {
     return {
       start: toIsoDate(addDays(new Date(interpreter.startDate), -30)),
@@ -534,7 +558,7 @@ function chooseSceneWindow(interpreter: InterpreterResult, events: EventEvidence
     };
   }
   if (span <= 45) return { start: interpreter.startDate, end: interpreter.endDate };
-  return { start: toIsoDate(addDays(end, -30)), end: toIsoDate(end) };
+  return { start: interpreter.startDate, end: interpreter.endDate };
 }
 
 function collectionsFor(intent: AnalysisIntent) {
@@ -600,6 +624,29 @@ function selectSceneFeatures(
   return byRelevance.slice(0, 2);
 }
 
+function mergeTemporalSceneGroups(groups: SceneResult[][], maximum: number) {
+  const selected: SceneResult[] = [];
+  const selectedIds = new Set<string>();
+  const add = (scene: SceneResult) => {
+    if (selectedIds.has(scene.canonicalSceneId) || selected.length >= maximum) return;
+    selected.push(scene);
+    selectedIds.add(scene.canonicalSceneId);
+  };
+
+  for (const group of groups) {
+    if (group[0]) add(group[0]);
+  }
+  const remaining = groups
+    .flatMap((group) => group.slice(1))
+    .sort((left, right) => right.qualityScore - left.qualityScore || left.datetime.localeCompare(right.datetime));
+  for (const scene of remaining) add(scene);
+
+  return selected.map((scene, index) => ({
+    ...scene,
+    role: index === 0 ? "primary" as const : scene.role === "confirmation" ? "confirmation" as const : "context" as const,
+  }));
+}
+
 async function queryScenes(
   interpreter: InterpreterResult,
   location: NonNullable<AnalysisResponse["location"]>,
@@ -607,6 +654,7 @@ async function queryScenes(
   queryText: string,
 ) {
   const window = chooseSceneWindow(interpreter, events);
+  const span = dateDistanceDays(interpreter.startDate, interpreter.endDate);
   const exactEventDate = events[0]?.date.slice(0, 10)
     || (/^\d{4}-\d{2}-\d{2}$/.test(interpreter.dateLabel) ? interpreter.dateLabel : null);
   const requiresTemporalPair = ["wildfire", "crop", "change"].includes(interpreter.intent);
@@ -619,39 +667,53 @@ async function queryScenes(
     const targetAnchor = exactEventDate || interpreter.endDate;
     const baselineStart = toIsoDate(addDays(new Date(`${baselineAnchor}T12:00:00Z`), -45));
     const targetEnd = toIsoDate(addDays(new Date(`${targetAnchor}T12:00:00Z`), 45));
-    const [baseline, target] = await Promise.all([
+    const requestedWindows = span > 45
+      ? temporalCatalogWindows(interpreter.startDate, interpreter.endDate, 4)
+      : [];
+    const searches = [
+      {
+        start: baselineStart,
+        end: baselineAnchor,
+        target: baselineAnchor,
+        role: "primary" as const,
+      },
+      ...requestedWindows.map((item) => ({ ...item, role: "context" as const })),
+      {
+        start: targetAnchor,
+        end: targetEnd,
+        target: targetAnchor,
+        role: "confirmation" as const,
+      },
+    ];
+    const groups = await Promise.all(searches.map((search) => (
       querySatelliteScenes({
         intent: interpreter.intent,
         bbox: location.bbox,
-        startDate: baselineStart,
-        endDate: baselineAnchor,
-        targetDate: baselineAnchor,
+        startDate: search.start,
+        endDate: search.end,
+        targetDate: search.target,
         queryText,
-        maxScenes: 6,
+        maxScenes: requestedWindows.length ? 3 : 6,
         timeoutMs: 6_000,
-      }),
-      querySatelliteScenes({
+      }).then((scenes) => scenes.map((scene, index) => ({
+        ...scene,
+        role: index === 0 ? search.role : "context" as const,
+      })))
+    )));
+    brokerScenes = mergeTemporalSceneGroups(groups, 12);
+  } else if (span > 45) {
+    const requestedWindows = temporalCatalogWindows(interpreter.startDate, interpreter.endDate);
+    const groups = await Promise.all(requestedWindows.map((search) => querySatelliteScenes({
         intent: interpreter.intent,
         bbox: location.bbox,
-        startDate: targetAnchor,
-        endDate: targetEnd,
-        targetDate: targetAnchor,
+        startDate: search.start,
+        endDate: search.end,
+        targetDate: search.target,
         queryText,
-        maxScenes: 6,
+        maxScenes: Math.max(2, Math.ceil(8 / requestedWindows.length)),
         timeoutMs: 6_000,
-      }),
-    ]);
-    const combined = new Map<string, SceneResult>();
-    for (const [index, scene] of baseline.entries()) {
-      combined.set(scene.canonicalSceneId, { ...scene, role: index === 0 ? "primary" : "context" });
-    }
-    for (const [index, scene] of target.entries()) {
-      const existing = combined.get(scene.canonicalSceneId);
-      if (!existing || scene.qualityScore > existing.qualityScore) {
-        combined.set(scene.canonicalSceneId, { ...scene, role: index === 0 ? "confirmation" : "context" });
-      }
-    }
-    brokerScenes = [...combined.values()].slice(0, 12);
+    })));
+    brokerScenes = mergeTemporalSceneGroups(groups, 8);
   } else {
     brokerScenes = await querySatelliteScenes({
       intent: interpreter.intent,
@@ -757,6 +819,29 @@ function haversineKm(a: [number, number], b: [number, number]) {
   return earth * 2 * Math.asin(Math.sqrt(h));
 }
 
+function distanceToBboxKm(point: [number, number], bbox: [number, number, number, number]) {
+  const longitude = Math.max(bbox[0], Math.min(bbox[2], point[0]));
+  const latitude = Math.max(bbox[1], Math.min(bbox[3], point[1]));
+  return haversineKm(point, [longitude, latitude]);
+}
+
+function eventProximityKm(bbox: [number, number, number, number]) {
+  const diagonal = haversineKm([bbox[0], bbox[1]], [bbox[2], bbox[3]]);
+  return Math.min(75, Math.max(10, diagonal * 0.2));
+}
+
+function expandBboxByKm(bbox: [number, number, number, number], distanceKm: number) {
+  const latitude = (bbox[1] + bbox[3]) / 2;
+  const latitudeDelta = distanceKm / 111.32;
+  const longitudeDelta = distanceKm / Math.max(111.32 * Math.cos(latitude * Math.PI / 180), 20);
+  return [
+    Math.max(-180, bbox[0] - longitudeDelta),
+    Math.min(90, bbox[3] + latitudeDelta),
+    Math.min(180, bbox[2] + longitudeDelta),
+    Math.max(-90, bbox[1] - latitudeDelta),
+  ] as const;
+}
+
 async function queryEventsUncached(
   interpreter: InterpreterResult,
   location: NonNullable<AnalysisResponse["location"]>,
@@ -766,49 +851,79 @@ async function queryEventsUncached(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), EVENT_TIMEOUT_MS);
   try {
-    const url = new URL("https://eonet.gsfc.nasa.gov/api/v3/events");
-    url.searchParams.set("category", category);
-    url.searchParams.set("status", "all");
-    url.searchParams.set("start", interpreter.startDate);
-    url.searchParams.set("end", interpreter.endDate);
-    url.searchParams.set("limit", "100");
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) return [];
-    const data = (await response.json()) as {
-      events?: Array<{
-        id: string;
-        title: string;
-        link: string;
-        sources?: Array<{ id: string; url: string }>;
-        geometry?: Array<{ date: string; type: string; coordinates: [number, number] }>;
-      }>;
+    type EonetEvent = {
+      id: string;
+      title: string;
+      link: string;
+      sources?: Array<{ id: string; url: string }>;
+      geometry?: Array<{ date: string; type: string; coordinates: [number, number] }>;
     };
+    const proximityKm = eventProximityKm(location.bbox);
+    const searchBbox = expandBboxByKm(location.bbox, proximityKm);
+    const windows = temporalCatalogWindows(interpreter.startDate, interpreter.endDate);
+    const searches = await Promise.allSettled(windows.map(async (window) => {
+      const url = new URL("https://eonet.gsfc.nasa.gov/api/v3/events");
+      url.searchParams.set("category", category);
+      url.searchParams.set("status", "all");
+      url.searchParams.set("start", window.start);
+      url.searchParams.set("end", window.end);
+      url.searchParams.set("bbox", searchBbox.join(","));
+      url.searchParams.set("limit", "100");
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) return [];
+      const data = (await response.json()) as { events?: EonetEvent[] };
+      return data.events || [];
+    }));
+    const catalogEvents = searches.flatMap((search) => search.status === "fulfilled" ? search.value : []) as EonetEvent[];
     const center: [number, number] = [location.longitude, location.latitude];
-    const maxDistance = Math.max(350, haversineKm([location.bbox[0], location.bbox[1]], [location.bbox[2], location.bbox[3]]) / 1.3);
-    const events: EventEvidence[] = [];
-    for (const event of data.events || []) {
-      const geometry = [...(event.geometry || [])].reverse().find((item) => item.type === "Point" && Array.isArray(item.coordinates));
-      if (!geometry || haversineKm(center, geometry.coordinates) > maxDistance) continue;
+    const rankedEvents: Array<EventEvidence & { distanceKm: number }> = [];
+    for (const event of catalogEvents) {
+      const geometry = (event.geometry || [])
+        .filter((item) => (
+          item.type === "Point"
+          && Array.isArray(item.coordinates)
+          && item.coordinates.length >= 2
+          && item.coordinates.every(Number.isFinite)
+          && typeof item.date === "string"
+          && item.date.slice(0, 10) >= interpreter.startDate
+          && item.date.slice(0, 10) <= interpreter.endDate
+        ))
+        .map((item) => ({ item, distanceKm: distanceToBboxKm(item.coordinates, location.bbox) }))
+        .filter((candidate) => candidate.distanceKm <= proximityKm)
+        .sort((left, right) => left.distanceKm - right.distanceKm || dateDistanceDays(left.item.date, interpreter.endDate) - dateDistanceDays(right.item.date, interpreter.endDate))[0];
+      if (!geometry) continue;
       const source = event.sources?.[0];
-      events.push({
+      rankedEvents.push({
         id: event.id,
         title: event.title,
-        date: geometry.date,
+        date: geometry.item.date,
         source: source?.id || "NASA EONET",
         sourceUrl: source?.url || event.link,
-        coordinates: geometry.coordinates,
+        coordinates: geometry.item.coordinates,
         type: "catalog-event",
+        distanceKm: geometry.distanceKm,
       });
     }
-    return events
+    const uniqueEvents = new Map<string, EventEvidence & { distanceKm: number }>();
+    for (const event of rankedEvents
       .sort((left, right) => (
-        haversineKm(center, left.coordinates) + dateDistanceDays(left.date, interpreter.endDate) / 8
-        - haversineKm(center, right.coordinates) - dateDistanceDays(right.date, interpreter.endDate) / 8
-      ))
-      .slice(0, 8);
+        left.distanceKm + haversineKm(center, left.coordinates) / 20 + dateDistanceDays(left.date, interpreter.endDate) / 8
+        - right.distanceKm - haversineKm(center, right.coordinates) / 20 - dateDistanceDays(right.date, interpreter.endDate) / 8
+      ))) {
+      if (!uniqueEvents.has(event.id)) uniqueEvents.set(event.id, event);
+    }
+    return [...uniqueEvents.values()].slice(0, 8).map((event) => ({
+      id: event.id,
+      title: event.title,
+      date: event.date,
+      source: event.source,
+      sourceUrl: event.sourceUrl,
+      coordinates: event.coordinates,
+      type: event.type,
+    }));
   } catch {
     return [];
   } finally {

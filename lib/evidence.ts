@@ -64,20 +64,23 @@ export function buildEvidenceLedger(input: {
     });
   }
 
-  const modelEvidenceId = evidenceId("model", `${input.model.id || "none"}-${input.generatedAt}`);
+  const modelEvidenceId = input.model.runId || evidenceId("model", `${input.model.id || "none"}-${input.generatedAt}`);
   if (input.model.status === "completed") {
     entries.push({
       id: modelEvidenceId,
       kind: "model-output",
       title: input.model.name,
-      source: input.model.provider,
-      sourceId: input.model.id || "none",
+      source: input.model.backend || input.model.provider,
+      sourceId: input.model.runId || input.model.id || "none",
       url: input.model.modelCardUrl,
-      observedAt: input.generatedAt,
+      observedAt: input.model.completedAt || input.generatedAt,
       retrievedAt: input.generatedAt,
       geometry: input.geometry,
       license: null,
-      limitations: input.model.calibratedConfidence ? [] : ["ציון המודל אינו מכויל כהסתברות."],
+      limitations: [
+        input.model.calibratedConfidence ? "" : "ציון המודל אינו מכויל כהסתברות.",
+        ...(input.model.reasonCodes || []).map((code) => `קוד ריצה: ${code}.`),
+      ].filter(Boolean),
     });
   }
 
@@ -143,9 +146,12 @@ export function buildEvidenceLedger(input: {
     modelVersions: input.model.id
       ? [{ id: input.model.id, version: input.model.version, status: input.model.status }]
       : [],
-    reasonCodes: input.feasibility.checks
-      .filter((check) => check.status !== "pass")
-      .map((check) => check.code),
+    reasonCodes: [...new Set([
+      ...input.feasibility.checks
+        .filter((check) => check.status !== "pass")
+        .map((check) => check.code),
+      ...(input.model.reasonCodes || []),
+    ])],
     measurements: input.measurements,
     limitations: input.limitations,
     createdAt: input.generatedAt,

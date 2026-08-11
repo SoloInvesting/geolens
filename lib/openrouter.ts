@@ -172,6 +172,12 @@ export function localBrainState() {
   return brainState();
 }
 
+function needsOpenVocabularyPlanning(query: string, fallback: InterpreterResult) {
+  if (fallback.intent !== "imagery") return false;
+  return /(?:אתר|זהה|מצא|חפש|ספור|מנה|סמן)/u.test(query)
+    || /\b(?:detect|identify|find|locate|count|segment|mark)\b/i.test(query);
+}
+
 export async function planWithOpenRouter(
   query: string,
   fallback: InterpreterResult,
@@ -182,7 +188,7 @@ export async function planWithOpenRouter(
     parseCoordinatePair(fallback.locationText)
     || isPlausibleLocationCandidate(fallback.locationText),
   );
-  if (localLocationIsComplete && !forceExternal) {
+  if (localLocationIsComplete && !forceExternal && !needsOpenVocabularyPlanning(query, fallback)) {
     return {
       interpretation: fallback,
       alternateLocationText: null,
@@ -234,6 +240,8 @@ export async function planWithOpenRouter(
               "You are the request planner for an evidence-first Earth-observation application.",
               "Parse the request only. Never claim that an event or object was observed.",
               "Do not invent a location, date, satellite scene, measurement, or confidence score.",
+              "Use intent=building as the existing open-vocabulary object route for user-named physical objects such as solar panels, wind turbines, aircraft, vehicles, bridges, roads, storage tanks, or construction sites, provided the request asks to detect, locate, count, or segment them.",
+              "Use intent=imagery only when the user asks to retrieve or display imagery without detecting a target.",
               `Today is ${referenceDate}. Resolve relative dates against today.`,
               "Keep the supplied fallback dates when the request has no explicit temporal instruction.",
               `Validated fallback: ${JSON.stringify(fallback)}`,

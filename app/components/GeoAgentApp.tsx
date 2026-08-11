@@ -3,6 +3,7 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import type { AnalysisResponse, BrainRun, GeoJsonGeometry, ModelRun, SceneResult } from "@/app/types";
+import { displayPreviewUrl } from "@/lib/preview-url";
 import { GeoMap } from "./GeoMap";
 
 type ConversationItem =
@@ -121,12 +122,13 @@ function sourceRole(scene: SceneResult) {
 }
 
 function SceneCard({ scene }: { scene: SceneResult }) {
+  const previewUrl = displayPreviewUrl(scene.thumbnailUrl);
   return (
     <article className="scene-card">
       <div className="scene-image-wrap">
-        {scene.thumbnailUrl ? (
+        {previewUrl ? (
           <Image
-            src={scene.thumbnailUrl}
+            src={previewUrl}
             alt={`תמונת מקור ${scene.instrument}`}
             className="scene-image"
             fill
@@ -179,12 +181,37 @@ function SceneCard({ scene }: { scene: SceneResult }) {
 
 function SceneComparison({ scenes }: { scenes: SceneResult[] }) {
   const [position, setPosition] = useState(50);
-  const comparable = scenes
+  const overlapRatio = (left: SceneResult, right: SceneResult) => {
+    const west = Math.max(left.bbox[0], right.bbox[0]);
+    const south = Math.max(left.bbox[1], right.bbox[1]);
+    const east = Math.min(left.bbox[2], right.bbox[2]);
+    const north = Math.min(left.bbox[3], right.bbox[3]);
+    if (west >= east || south >= north) return 0;
+    const intersection = (east - west) * (north - south);
+    const leftArea = (left.bbox[2] - left.bbox[0]) * (left.bbox[3] - left.bbox[1]);
+    const rightArea = (right.bbox[2] - right.bbox[0]) * (right.bbox[3] - right.bbox[1]);
+    return intersection / Math.max(Math.min(leftArea, rightArea), Number.EPSILON);
+  };
+  const candidates = scenes
     .filter((scene) => scene.thumbnailUrl)
     .sort((left, right) => new Date(left.datetime).getTime() - new Date(right.datetime).getTime());
-  const before = comparable[0];
-  const after = comparable[comparable.length - 1];
-  if (!before || !after || before.id === after.id || !before.thumbnailUrl || !after.thumbnailUrl) return null;
+  let before: SceneResult | undefined;
+  let after: SceneResult | undefined;
+  for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
+    for (let rightIndex = candidates.length - 1; rightIndex > leftIndex; rightIndex -= 1) {
+      const left = candidates[leftIndex];
+      const right = candidates[rightIndex];
+      if (left.platform === right.platform && left.instrument === right.instrument && overlapRatio(left, right) >= 0.8) {
+        before = left;
+        after = right;
+        break;
+      }
+    }
+    if (before && after) break;
+  }
+  const beforePreview = displayPreviewUrl(before?.thumbnailUrl || null);
+  const afterPreview = displayPreviewUrl(after?.thumbnailUrl || null);
+  if (!before || !after || before.id === after.id || !beforePreview || !afterPreview) return null;
 
   return (
     <section className="comparison-panel">
@@ -193,12 +220,12 @@ function SceneComparison({ scenes }: { scenes: SceneResult[] }) {
           <span className="eyebrow">השוואת מקור</span>
           <h3>לפני ואחרי</h3>
         </div>
-        <span>השוואה חזותית בלבד, ללא co-registration פיקסלי</span>
+        <span>אותו חיישן וכיסוי חופף, השוואה חזותית ללא co-registration פיקסלי</span>
       </div>
       <div className="comparison-stage">
-        <Image src={before.thumbnailUrl} alt={`סצנת לפני ${before.datetime}`} fill unoptimized sizes="700px" />
+        <Image src={beforePreview} alt={`סצנת לפני ${before.datetime}`} fill unoptimized sizes="700px" />
         <div className="comparison-after" style={{ clipPath: `inset(0 ${100 - position}% 0 0)` }}>
-          <Image src={after.thumbnailUrl} alt={`סצנת אחרי ${after.datetime}`} fill unoptimized sizes="700px" />
+          <Image src={afterPreview} alt={`סצנת אחרי ${after.datetime}`} fill unoptimized sizes="700px" />
         </div>
         <i style={{ left: `${position}%` }} />
         <span className="comparison-before-label">{new Date(before.datetime).toLocaleDateString("he-IL")}</span>
@@ -471,6 +498,9 @@ function ResultMessage({ result }: { result: AnalysisResponse }) {
           <div>
             <strong>{modelStatusLabel(result.model)} · {result.model.name}</strong>
             <p>{result.model.message}</p>
+            {result.model.runId && (
+              <small>Run ID: {result.model.runId}{result.model.backend ? ` · Backend: ${result.model.backend}` : ""}{result.model.completedAt ? ` · ${new Date(result.model.completedAt).toLocaleString("he-IL")}` : ""}</small>
+            )}
             {result.model.modelCardUrl && (
               <a className="model-card-link" href={result.model.modelCardUrl} target="_blank" rel="noreferrer">
                 פרטי המודל והקלט הנדרש
@@ -485,20 +515,28 @@ function ResultMessage({ result }: { result: AnalysisResponse }) {
 
 export function GeoAgentApp() {
   const [query, setQuery] = useState("");
-  const [conversation, setConversation] = useState<ConversationItem[]>(() => {
-    const saved = loadSavedAnalysis();
-    return saved
-      ? [
-          { id: "saved-user", role: "user", text: saved.query },
-          { id: "saved-result", role: "assistant", result: saved },
-        ]
-      : [];
-  });
-  const [analysis, setAnalysis] = useState<AnalysisResponse | null>(() => loadSavedAnalysis());
+  const [conversation, setConversation] = useState<ConversationItem[]>([]);
+  const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [brainStage, setBrainStage] = useState(0);
   const endRef = useRef<HTMLDivElement>(null);
   const messageSequence = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      const saved = loadSavedAnalysis();
+      if (!saved || cancelled) return;
+      setAnalysis(saved);
+      setConversation([
+        { id: "saved-user", role: "user", text: saved.query },
+        { id: "saved-result", role: "assistant", result: saved },
+      ]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!busy) return;

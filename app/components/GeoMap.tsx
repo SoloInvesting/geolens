@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { AnalysisResponse } from "@/app/types";
+import { displayPreviewUrl } from "@/lib/preview-url";
 
 type GeoMapProps = {
   analysis: AnalysisResponse | null;
@@ -46,11 +47,13 @@ export function GeoMap({ analysis }: GeoMapProps) {
       });
       const evidenceLayer = L.layerGroup().addTo(map);
       const sceneLayer = L.layerGroup().addTo(map);
+      const scenePreviewLayer = L.layerGroup().addTo(map);
 
       L.control
         .layers(
           { "תצלום לוויין": satellite, "מפת רחובות": street },
           {
+            "Quicklook של הסצנה שנבחרה": scenePreviewLayer,
             "טביעת רגל של סצנות": sceneLayer,
             "אירועים וזיהויים": evidenceLayer,
           },
@@ -70,6 +73,25 @@ export function GeoMap({ analysis }: GeoMapProps) {
         })
           .bindTooltip("אזור החיפוש שפוענח מהבקשה")
           .addTo(evidenceLayer);
+
+        const previewScene = analysis.scenes.find((scene) => scene.role === "primary" && scene.thumbnailUrl)
+          || analysis.scenes.find((scene) => scene.thumbnailUrl);
+        const previewUrl = displayPreviewUrl(previewScene?.thumbnailUrl || null);
+        if (previewScene && previewUrl) {
+          const previewBounds = L.latLngBounds(
+            [previewScene.bbox[1], previewScene.bbox[0]],
+            [previewScene.bbox[3], previewScene.bbox[2]],
+          );
+          const preview = L.imageOverlay(previewUrl, previewBounds, {
+            opacity: 0.74,
+            crossOrigin: true,
+            alt: `Quicklook ${previewScene.instrument}`,
+          });
+          const previewPopup = document.createElement("div");
+          previewPopup.dir = "rtl";
+          previewPopup.textContent = `Quicklook של ${previewScene.instrument} מ-${new Date(previewScene.datetime).toLocaleDateString("he-IL")}. זו תצוגת מקור, לא הוכחה שהמודל פענח את פיקסלי המפה הבסיסית.`;
+          preview.bindPopup(previewPopup).addTo(scenePreviewLayer);
+        }
 
         for (const [index, scene] of analysis.scenes.entries()) {
           const footprint = scene.geometry
@@ -103,7 +125,19 @@ export function GeoMap({ analysis }: GeoMapProps) {
           });
           const tooltip = document.createElement("span");
           tooltip.textContent = `${event.title} · ${new Date(event.date).toLocaleDateString("he-IL")}`;
-          marker.bindTooltip(tooltip).addTo(evidenceLayer);
+          const popup = document.createElement("div");
+          popup.dir = "rtl";
+          const label = document.createElement("strong");
+          label.textContent = event.title;
+          const source = document.createElement("a");
+          source.href = event.sourceUrl;
+          source.target = "_blank";
+          source.rel = "noreferrer";
+          source.textContent = `${event.source} · ${new Date(event.date).toLocaleDateString("he-IL")}`;
+          popup.appendChild(label);
+          popup.appendChild(document.createElement("br"));
+          popup.appendChild(source);
+          marker.bindTooltip(tooltip).bindPopup(popup).addTo(evidenceLayer);
         }
 
         if (analysis.detectionGeometry) {
@@ -126,8 +160,8 @@ export function GeoMap({ analysis }: GeoMapProps) {
           const detectionPopup = document.createElement("div");
           detectionPopup.dir = "rtl";
           detectionPopup.textContent = analysis.measurements?.areaKm2 === null || !analysis.measurements
-            ? `תוצאת ${analysis.model.name}`
-            : `תוצאת ${analysis.model.name} · שטח ${analysis.measurements.areaKm2.toLocaleString("he-IL")} קמ״ר`;
+            ? `תוצאת ${analysis.model.name}${analysis.model.runId ? ` · ריצה ${analysis.model.runId}` : ""}`
+            : `תוצאת ${analysis.model.name} · שטח ${analysis.measurements.areaKm2.toLocaleString("he-IL")} קמ״ר${analysis.model.runId ? ` · ריצה ${analysis.model.runId}` : ""}`;
           detectionLayer.bindTooltip("תוצאת מודל").bindPopup(detectionPopup).addTo(evidenceLayer);
           const detectedBounds = detectionLayer.getBounds();
           if (detectedBounds.isValid()) map.fitBounds(detectedBounds.pad(0.15), { maxZoom: 14 });
@@ -141,6 +175,7 @@ export function GeoMap({ analysis }: GeoMapProps) {
         const element = L.DomUtil.create("div", "geo-map-legend");
         element.innerHTML =
           '<div><span class="legend-line legend-search"></span>אזור חיפוש</div>' +
+          '<div><span class="legend-line legend-preview"></span>Quicklook נבחר</div>' +
           '<div><span class="legend-line legend-scene"></span>סצנת מקור</div>' +
           '<div><span class="legend-dot"></span>אירוע קטלוגי</div>' +
           '<div><span class="legend-line legend-model"></span>תוצאת מודל</div>';

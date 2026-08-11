@@ -23,13 +23,13 @@ export async function generateMetadata(): Promise<Metadata> {
       description,
       type: "website",
       url: baseUrl,
-      images: [{ url: `${baseUrl}/og.png`, width: 1735, height: 909, alt: "GeoLens Autonomous EO Interpreter" }],
+      images: [{ url: `${baseUrl}/og-v2.png`, width: 1536, height: 1024, alt: "GeoLens Autonomous EO Interpreter" }],
     },
     twitter: {
       card: "summary_large_image",
       title,
       description,
-      images: [`${baseUrl}/og.png`],
+      images: [`${baseUrl}/og-v2.png`],
     },
   };
 }

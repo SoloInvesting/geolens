@@ -99,7 +99,6 @@ async function analyze(worker, query) {
 }
 
 test("passes deterministic Hebrew location, time, evidence, safety, and cache gates", async () => {
-  const worker = await loadWorker();
   const originalFetch = globalThis.fetch;
   let catalogRequests = 0;
   let openRouterRequests = 0;
@@ -127,6 +126,7 @@ test("passes deterministic Hebrew location, time, evidence, safety, and cache ga
   };
 
   try {
+    const worker = await loadWorker();
     const madrid = await analyze(worker, "הצג תמונת לוויין של מדריד באוגוסט 2024");
     assert.equal(madrid.ok, true);
     assert.match(madrid.location.name, /Madrid/);

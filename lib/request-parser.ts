@@ -59,6 +59,9 @@ const HEBREW_NUMBER_WORDS: Record<string, number> = {
   עשרת: 10,
 };
 
+const HEBREW_AMOUNT_PATTERN = Object.keys(HEBREW_NUMBER_WORDS)
+  .sort((left, right) => right.length - left.length)
+  .join("|");
 const HEBREW_MONTH_PATTERN = Object.keys(HEBREW_MONTHS).join("|");
 const ENGLISH_MONTH_PATTERN = Object.keys(ENGLISH_MONTHS).join("|");
 const TEMPORAL_WORDS = new Set([
@@ -99,6 +102,16 @@ const TEMPORAL_WORDS = new Set([
   "days",
   "last",
   "latest",
+  "the",
+  "in",
+  "during",
+  "for",
+  "over",
+  ...Object.keys(HEBREW_NUMBER_WORDS),
+  "האחרונים",
+  "האחרונות",
+  "החולפים",
+  "החולפות",
 ]);
 
 const NON_LOCATION_WORDS = new Set([
@@ -106,6 +119,7 @@ const NON_LOCATION_WORDS = new Set([
   "בבקשה",
   "מפה",
   "תמונה",
+  "תמונת",
   "תמונות",
   "לוויין",
   "לווין",
@@ -126,6 +140,54 @@ const NON_LOCATION_WORDS = new Set([
   "wildfires",
   "flood",
   "floods",
+  "פאנל",
+  "פאנלים",
+  "סולרי",
+  "סולריים",
+  "רכב",
+  "רכבים",
+  "מכונית",
+  "מכוניות",
+  "משאית",
+  "משאיות",
+  "מטוס",
+  "מטוסים",
+  "vehicle",
+  "vehicles",
+  "car",
+  "cars",
+  "truck",
+  "trucks",
+  "aircraft",
+  "airplane",
+  "airplanes",
+  "solar",
+  "panel",
+  "panels",
+]);
+
+const LEADING_QUERY_WORDS = new Set([
+  ...NON_LOCATION_WORDS,
+  "בדוק",
+  "בדקי",
+  "הצג",
+  "הציגי",
+  "אתר",
+  "תאתר",
+  "זהה",
+  "נתח",
+  "חפש",
+  "מצא",
+  "של",
+  "בבקשה",
+  "show",
+  "find",
+  "detect",
+  "analyze",
+  "analyse",
+  "check",
+  "locate",
+  "please",
 ]);
 
 function toIsoDate(date: Date) {
@@ -212,25 +274,25 @@ export function parseDateRange(query: string, now = new Date()) {
     label: (amount: number) => string;
   }> = [
     {
-      pattern: /(?:ב(?:משך\s+)?|ב-?)?(\d+|אחת|אחד|שני|שתי|שלושה|שלוש|שלושת|ארבעה|ארבע|ארבעת|חמישה|חמש|חמשת|שישה|שש|ששת|שבעה|שבע|שבעת|שמונה|שמונת|תשעה|תשע|תשעת|עשרה|עשר|עשרת)?\s*ה?ימים?\s+(?:האחרונים|האחרונות|האחרון|החולפים|החולפות)|(?:in|over)\s+(?:the\s+)?last\s+(\d+)\s+days?/,
+      pattern: /(?:ב(?:משך\s+)?|ב-?)?(\d+|אחת|אחד|שני|שתי|שלושה|שלוש|שלושת|ארבעה|ארבע|ארבעת|חמישה|חמש|חמשת|שישה|שש|ששת|שבעה|שבע|שבעת|שמונה|שמונת|תשעה|תשע|תשעת|עשרה|עשר|עשרת)?\s*ה?ימים?\s+(?:האחרונים|האחרונות|האחרון|החולפים|החולפות)|(?:(?:in|over|during|for)\s+)?(?:the\s+)?last\s+(\d+)?\s*days?/,
       unit: "day",
       defaultAmount: 1,
       label: (amount) => amount === 1 ? "היום האחרון" : `${amount} הימים האחרונים`,
     },
     {
-      pattern: /(?:ב(?:משך\s+)?|ב-?)?(\d+|אחת|אחד|שני|שתי|שלושה|שלוש|שלושת|ארבעה|ארבע|ארבעת|חמישה|חמש|חמשת|שישה|שש|ששת|שבעה|שבע|שבעת|שמונה|שמונת|תשעה|תשע|תשעת|עשרה|עשר|עשרת)?\s*ה?שבוע(?:ות|יים)?\s+(?:האחרונים|האחרונות|האחרון|החולפים|החולפות)|(?:in|over)\s+(?:the\s+)?last\s+(\d+)?\s*weeks?/,
+      pattern: /(?:ב(?:משך\s+)?|ב-?)?(\d+|אחת|אחד|שני|שתי|שלושה|שלוש|שלושת|ארבעה|ארבע|ארבעת|חמישה|חמש|חמשת|שישה|שש|ששת|שבעה|שבע|שבעת|שמונה|שמונת|תשעה|תשע|תשעת|עשרה|עשר|עשרת)?\s*ה?שבוע(?:ות|יים)?\s+(?:האחרונים|האחרונות|האחרון|החולפים|החולפות)|(?:(?:in|over|during|for)\s+)?(?:the\s+)?last\s+(\d+)?\s*weeks?/,
       unit: "week",
       defaultAmount: 1,
       label: (amount) => amount === 1 ? "השבוע האחרון" : `${amount} השבועות האחרונים`,
     },
     {
-      pattern: /(?:ב(?:משך\s+)?|ב-?)?(\d+|אחת|אחד|שני|שתי|שלושה|שלוש|שלושת|ארבעה|ארבע|ארבעת|חמישה|חמש|חמשת|שישה|שש|ששת|שבעה|שבע|שבעת|שמונה|שמונת|תשעה|תשע|תשעת|עשרה|עשר|עשרת)?\s*ה?חודש(?:ים|יים)?\s+(?:האחרונים|האחרונות|האחרון|החולפים|החולפות)|(?:in|over)\s+(?:the\s+)?last\s+(\d+)?\s*months?/,
+      pattern: /(?:ב(?:משך\s+)?|ב-?)?(\d+|אחת|אחד|שני|שתי|שלושה|שלוש|שלושת|ארבעה|ארבע|ארבעת|חמישה|חמש|חמשת|שישה|שש|ששת|שבעה|שבע|שבעת|שמונה|שמונת|תשעה|תשע|תשעת|עשרה|עשר|עשרת)?\s*ה?חודש(?:ים|יים)?\s+(?:האחרונים|האחרונות|האחרון|החולפים|החולפות)|(?:(?:in|over|during|for)\s+)?(?:the\s+)?last\s+(\d+)?\s*months?/,
       unit: "month",
       defaultAmount: 1,
       label: (amount) => amount === 1 ? "החודש האחרון" : `${amount} החודשים האחרונים`,
     },
     {
-      pattern: /(?:ב(?:משך\s+)?|ב-?)?(\d+|אחת|אחד|שני|שתי|שנתיים|שלושה|שלוש|שלושת|ארבעה|ארבע|ארבעת|חמישה|חמש|חמשת|שישה|שש|ששת|שבעה|שבע|שבעת|שמונה|שמונת|תשעה|תשע|תשעת|עשרה|עשר|עשרת)?\s*ה?שנ(?:ה|ים|תיים)\s+(?:האחרונה|האחרונות|החולפת|החולפות)|(?:during\s+the\s+|in\s+the\s+|over\s+the\s+)?last\s+(\d+)?\s*years?/,
+      pattern: /(?:ב(?:משך\s+)?|ב-?)?(\d+|אחת|אחד|שני|שתי|שנתיים|שלושה|שלוש|שלושת|ארבעה|ארבע|ארבעת|חמישה|חמש|חמשת|שישה|שש|ששת|שבעה|שבע|שבעת|שמונה|שמונת|תשעה|תשע|תשעת|עשרה|עשר|עשרת)?\s*ה?שנ(?:ה|ים|תיים)\s+(?:האחרונה|האחרונות|החולפת|החולפות)|(?:(?:in|over|during|for)\s+)?(?:the\s+)?last\s+(\d+)?\s*years?/,
       unit: "year",
       defaultAmount: 1,
       label: (amount) => amount === 1 ? "השנה האחרונה" : `${amount} השנים האחרונות`,
@@ -272,6 +334,7 @@ export function parseDateRange(query: string, now = new Date()) {
 }
 
 const HEBREW_TEMPORAL_STOP = [
+  `ב-?(?:משך\\s+)?(?:${HEBREW_AMOUNT_PATTERN})?\\s*ה?(?:ימים?|שבוע(?:ות|יים)?|חודש(?:ים|יים)?|שנ(?:ה|ים|תיים))`,
   "בתאריך",
   "ביום",
   "לאחר",
@@ -292,6 +355,7 @@ const HEBREW_TEMPORAL_STOP = [
 ].join("|");
 
 const ENGLISH_TEMPORAL_STOP = [
+  "(?:in|during|for|over)\\s+(?:the\\s+)?last",
   "on",
   "during",
   "after",
@@ -315,6 +379,17 @@ function normalizedWords(value: string) {
     .replace(/[.,?;:()[\]{}]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function trimLeadingQueryWords(value: string) {
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  while (words.length) {
+    const normalized = normalizedWords(words[0]);
+    const withoutHebrewPrefix = /^[ול]/.test(normalized) ? normalized.slice(1) : normalized;
+    if (!LEADING_QUERY_WORDS.has(normalized) && !LEADING_QUERY_WORDS.has(withoutHebrewPrefix)) break;
+    words.shift();
+  }
+  return words.join(" ").trim();
 }
 
 export function isPlausibleLocationCandidate(value: string) {
@@ -363,10 +438,42 @@ export function extractLocationCandidate(query: string) {
   const english = firstPlausible(query.matchAll(englishPattern));
   if (english) return english;
 
+  const bareEnglishPattern = new RegExp(
+    `^\\s*([A-Za-zÀ-ÿ' .-]+?)(?=\\s+(?:(?:in|during|for|over)\\s+(?:the\\s+)?last\\b|(?:${ENGLISH_MONTH_PATTERN})\\s+20\\d{2}\\b|20\\d{2}\\b))`,
+    "i",
+  );
+  const bareEnglish = trimLeadingQueryWords(query.match(bareEnglishPattern)?.[1] || "");
+  if (isPlausibleLocationCandidate(bareEnglish)) return bareEnglish;
+
   const explicitPattern = new RegExp(`(?:^|\\s)(?:באזור|ליד|סביב|של|עבור|מעל|בתוך)\\s+([א-ת׳״'" -]{2,}?)(?=\\s+(?:${HEBREW_TEMPORAL_STOP})|[,.?]|$)`, "g");
   const explicit = firstPlausible(query.matchAll(explicitPattern));
   if (explicit) return explicit;
 
   const attachedPattern = new RegExp(`\\sב([א-ת׳״'" -]{2,}?)(?=\\s+(?:${HEBREW_TEMPORAL_STOP})|[,.?]|$)`, "g");
-  return firstPlausible(query.matchAll(attachedPattern));
+  const attached = firstPlausible(query.matchAll(attachedPattern));
+  if (attached) return attached;
+
+  const bareHebrewPattern = new RegExp(`^\\s*([א-ת׳״'" -]{2,}?)(?=\\s+(?:${HEBREW_TEMPORAL_STOP}))`);
+  const bareHebrew = trimLeadingQueryWords(query.match(bareHebrewPattern)?.[1] || "");
+  return isPlausibleLocationCandidate(bareHebrew) ? bareHebrew : "";
+}
+
+function includesAny(query: string, terms: string[]) {
+  return terms.some((term) => query.includes(term));
+}
+
+function includesOpenVocabularyObject(query: string) {
+  return /(?:פאנל(?:ים)?\s+סולרי(?:ים)?|לוחות?\s+(?:סולרי(?:ים)?|פוטו-?וולטאיים)|כלי\s+רכב|רכב(?:ים)?|מכונית|מכוניות|משאית|משאיות|מטוס(?:ים)?|כלי\s+טיס)|\b(?:solar\s+panels?|photovoltaic\s+panels?|pv\s+arrays?|vehicles?|cars?|trucks?|aircraft|airplanes?|helicopters?|buses)\b/u.test(query);
+}
+
+export function inferIntentFromQuery(query: string) {
+  const normalized = query.toLowerCase();
+  if (includesAny(normalized, ["הר געש", "הרי געש", "געשי", "געשית", "וולקני", "התפרצות", "התפרצויות", "לבה", "אפר געשי", "volcano", "volcanic", "eruption", "lava", "ash plume"])) return "volcano";
+  if (includesAny(normalized, ["הצפה", "הצפות", "שיטפון", "שטפונות", "flood", "inundation", "standing water"])) return "flood";
+  if (includesAny(normalized, ["שריפה", "שריפות", "צלקת שריפה", "שטח שרוף", "wildfire", "burn scar", "active fire", "smoke plume"])) return "wildfire";
+  if (includesAny(normalized, ["ספינה", "ספינות", "כלי שיט", "אונייה", "ship", "vessel", "boat"])) return "vessel";
+  if (includesAny(normalized, ["בניין", "בניינים", "מבנים", "בית", "building", "rooftop", "structure"]) || includesOpenVocabularyObject(normalized)) return "building";
+  if (includesAny(normalized, ["גידול", "גידולים", "חקלא", "יבול", "crop", "agriculture", "vegetation health"])) return "crop";
+  if (includesAny(normalized, ["שינוי", "לפני ואחרי", "השתנה", "change", "before and after", "difference"])) return "change";
+  return "imagery";
 }

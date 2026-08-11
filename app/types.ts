@@ -62,6 +62,11 @@ export type ModelRun = {
   calibratedConfidence: boolean;
   version: string | null;
   detected: boolean | null;
+  reasonCodes?: FeasibilityReasonCode[];
+  errorCode?: string | null;
+  runId?: string | null;
+  completedAt?: string | null;
+  backend?: string | null;
 };
 
 export type BrainRun = {

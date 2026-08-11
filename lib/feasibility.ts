@@ -297,7 +297,13 @@ export function assessFeasibility(input: FeasibilityInput): FeasibilityAssessmen
     } else if (input.model.status === "failed") {
       addCheck(checks, "model", "warning", "MODEL_FAILED", "שירות המודל נכשל, ולכן התוצאה אינה מסקנת פענוח.");
     } else if (input.model.status === "blocked") {
-      addCheck(checks, "model", "warning", "MODEL_ENDPOINT_UNCONFIGURED", "הפעלת המודל נחסמה בגלל תנאי קלט שלא התקיימו.");
+      addCheck(
+        checks,
+        "model",
+        "warning",
+        input.model.reasonCodes?.[0] || "MODEL_ENDPOINT_UNCONFIGURED",
+        "הפעלת המודל נחסמה בגלל תנאי קלט שלא התקיימו.",
+      );
     } else if (!realModelRun) {
       const code: FeasibilityReasonCode = input.model.detected === true ? "INVALID_MODEL_GEOMETRY" : "UNCALIBRATED_CONFIDENCE";
       addCheck(checks, "model", "warning", code, "אין רשומת ריצה מלאה שמאפשרת להסיק חיובי או שלילי.");
