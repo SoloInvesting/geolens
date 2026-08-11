@@ -42,8 +42,8 @@ test("accepts a grounded free-model narrative and rejects an unsafe one", async 
         choices: [{
           message: {
             content: unsafe
-              ? JSON.stringify({ answer: "זוהתה שריפה בספרד." })
-              : JSON.stringify({ answer: "הבקשה מתייחסת לכל שטח ספרד, ולכן יש לצמצם אותה למחוז או לעיר לפני ניתוח אמין." }),
+              ? "זוהתה שריפה בספרד."
+              : "הבקשה מתייחסת לכל שטח ספרד, ולכן יש לצמצם אותה למחוז או לעיר לפני ניתוח אמין.",
           },
         }],
       });
@@ -59,11 +59,9 @@ test("accepts a grounded free-model narrative and rejects an unsafe one", async 
     assert.match(safe.answer, /אין ראיה מספקת|לא ניתן לקבוע/);
     assert.match(safe.answer, /לא בוצע פענוח פיקסלים/);
     assert.equal(requests, 1);
-    assert.ok(openRouterBodies[0].models.length >= 2);
-    assert.ok(openRouterBodies[0].models.every((model) => model.endsWith(":free")));
-    assert.equal(openRouterBodies[0].response_format?.type, "json_schema");
+    assert.ok(openRouterBodies[0].model.endsWith(":free"));
     assert.equal(openRouterBodies[0].provider?.require_parameters, true);
-    assert.deepEqual(openRouterBodies[0].provider?.sort, { by: "latency", partition: "none" });
+    assert.equal(openRouterBodies[0].provider?.sort, "latency");
     assert.equal(openRouterBodies[0].reasoning?.exclude, true);
 
     unsafe = true;
