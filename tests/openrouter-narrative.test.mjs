@@ -62,6 +62,7 @@ test("accepts a grounded free-model narrative and rejects an unsafe one", async 
     assert.ok(openRouterBodies[0].model.endsWith(":free"));
     assert.equal(openRouterBodies[0].provider?.require_parameters, true);
     assert.equal(openRouterBodies[0].provider?.sort, "latency");
+    assert.equal(openRouterBodies[0].reasoning?.effort, "none");
     assert.equal(openRouterBodies[0].reasoning?.exclude, true);
 
     unsafe = true;
