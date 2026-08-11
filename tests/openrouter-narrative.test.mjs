@@ -59,9 +59,12 @@ test("accepts a grounded free-model narrative and rejects an unsafe one", async 
     assert.match(safe.answer, /לא ניתן לקבוע/);
     assert.match(safe.answer, /לא בוצע פענוח פיקסלים/);
     assert.equal(requests, 1);
-    assert.equal(openRouterBodies[0].model, "openrouter/free");
+    assert.ok(openRouterBodies[0].models.length >= 2);
+    assert.ok(openRouterBodies[0].models.every((model) => model.endsWith(":free")));
     assert.equal(openRouterBodies[0].response_format?.type, "json_schema");
     assert.equal(openRouterBodies[0].provider?.require_parameters, true);
+    assert.deepEqual(openRouterBodies[0].provider?.sort, { by: "latency", partition: "none" });
+    assert.equal(openRouterBodies[0].reasoning?.exclude, true);
 
     unsafe = true;
     const rejected = await analyze(worker, "תאתר שריפות בספרד בשנת 2025");

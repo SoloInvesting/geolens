@@ -4,6 +4,12 @@ import { isPlausibleLocationCandidate, parseCoordinatePair } from "@/lib/request
 const OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_FREE_MODEL = "openrouter/free";
 const REQUEST_TIMEOUT_MS = 8_000;
+const NARRATIVE_TIMEOUT_MS = 20_000;
+const OPENROUTER_FREE_NARRATIVE_MODELS = [
+  "google/gemma-4-26b-a4b-it:free",
+  "openai/gpt-oss-20b:free",
+  "nvidia/nemotron-nano-9b-v2:free",
+] as const;
 const DEFAULT_DATE_LABEL = "45 הימים האחרונים";
 
 const INTENTS: AnalysisIntent[] = [
@@ -447,7 +453,7 @@ export async function writeAnalysisNarrative(input: NarrativeInput) {
   };
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), NARRATIVE_TIMEOUT_MS);
   try {
     const response = await fetch(OPENROUTER_ENDPOINT, {
       method: "POST",
@@ -460,15 +466,22 @@ export async function writeAnalysisNarrative(input: NarrativeInput) {
         "X-Title": "GeoLens",
       },
       body: JSON.stringify({
-        model: OPENROUTER_FREE_MODEL,
+        models: OPENROUTER_FREE_NARRATIVE_MODELS,
         temperature: 0.15,
-        max_tokens: 520,
+        max_tokens: 360,
+        reasoning: {
+          exclude: true,
+        },
         response_format: {
           type: "json_schema",
           json_schema: narrativeSchema(),
         },
         provider: {
           require_parameters: true,
+          sort: {
+            by: "latency",
+            partition: "none",
+          },
         },
         messages: [
           {
@@ -516,7 +529,7 @@ export async function writeAnalysisNarrative(input: NarrativeInput) {
         requestedModel: OPENROUTER_FREE_MODEL,
         actualModel,
         status: "completed",
-        message: `התשובה נוסחה דרך ${OPENROUTER_FREE_MODEL} באמצעות ${actualModel || "מודל חינמי"}, על בסיס עובדות שאומתו ב-GeoLens.`,
+        message: `התשובה נוסחה באמצעות ${actualModel || "מודל חינמי"}, מתוך מאגר מודלים ללא עלות ועל בסיס עובדות שאומתו ב-GeoLens.`,
       }),
     };
   } catch {
