@@ -6,9 +6,8 @@ const OPENROUTER_FREE_MODEL = "openrouter/free";
 const REQUEST_TIMEOUT_MS = 8_000;
 const NARRATIVE_TIMEOUT_MS = 20_000;
 const OPENROUTER_FREE_NARRATIVE_MODELS = [
+  "google/gemma-4-31b-it:free",
   "google/gemma-4-26b-a4b-it:free",
-  "openai/gpt-oss-20b:free",
-  "nvidia/nemotron-nano-9b-v2:free",
 ] as const;
 const DEFAULT_DATE_LABEL = "45 הימים האחרונים";
 
