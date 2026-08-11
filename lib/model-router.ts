@@ -170,7 +170,14 @@ function inputBlocker(
   scenes: SceneResult[],
   interpreter: InterpreterResult,
   events: EventEvidence[],
+  location: ResolvedLocation,
 ) {
+  const [west, south, east, north] = location.bbox;
+  const meanLatitudeRadians = ((south + north) / 2) * Math.PI / 180;
+  const approximateAreaKm2 = Math.abs((east - west) * 111.32 * Math.cos(meanLatitudeRadians) * (north - south) * 110.57);
+  if (approximateAreaKm2 > 150_000) {
+    return `אזור המשימה הוא כ-${Math.round(approximateAreaKm2).toLocaleString("he-IL")} קמ״ר. המודל לא יורץ על מספר סצנות חלקי שאינו מכסה את האזור כולו. יש לצמצם לעיר, מחוז או פוליגון ממוקד.`;
+  }
   if (spec.id === "prithvi-eo-2.0-burnscars" && !events.length && !hasExactAnalysisDate(interpreter)) {
     return "לסגמנטציית צלקת שריפה נדרש תאריך אירוע מדויק או אירוע קטלוגי מאומת, כדי לבחור תמונת לפני ואחרי אמיתיות.";
   }
@@ -364,7 +371,7 @@ export async function runDedicatedModel(input: {
   const spec = modelForIntent(input.interpreter.intent);
   if (!spec) return { model: modelState(null), geometry: null, confidence: null, summary: "" };
 
-  const blocker = inputBlocker(spec, input.scenes, input.interpreter, input.events);
+  const blocker = inputBlocker(spec, input.scenes, input.interpreter, input.events, input.location);
   if (blocker) {
     return {
       model: modelState(spec, { status: "blocked", message: blocker }),

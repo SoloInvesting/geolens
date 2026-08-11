@@ -93,6 +93,9 @@ const LANDSAT_TERMS = "https://www.usgs.gov/landsat-missions/landsat-data-access
 const NAIP_TERMS = "https://naip-usdaonline.hub.arcgis.com/";
 const HLS_TERMS = "https://www.earthdata.nasa.gov/data/projects/hls";
 const DAY_MS = 86_400_000;
+const SCENE_CACHE_TTL_MS = 5 * 60 * 1_000;
+const SCENE_CACHE_LIMIT = 100;
+const sceneQueryCache = new Map<string, { expiresAt: number; promise: Promise<BrokerScene[]> }>();
 
 const ASSET_SPECS: Record<Exclude<SceneFamily, "unknown">, Array<{ keys: string[]; label: string }>> = {
   "sentinel-1": [
@@ -691,12 +694,36 @@ function midpointDate(startDate: string, endDate: string) {
   return new Date((start + end) / 2).toISOString().slice(0, 10);
 }
 
+function sceneQueryCacheKey(input: SatelliteSceneQuery) {
+  return JSON.stringify({
+    intent: input.intent,
+    bbox: input.bbox.map((value) => Math.round(value * 1_000_000) / 1_000_000),
+    startDate: input.startDate,
+    endDate: input.endDate,
+    targetDate: input.targetDate || null,
+    maxScenes: Math.min(Math.max(input.maxScenes ?? 12, 1), 30),
+    objectRequest: isObjectRequest(input),
+  });
+}
+
+function trimSceneCache() {
+  const now = Date.now();
+  for (const [key, entry] of sceneQueryCache) {
+    if (entry.expiresAt <= now) sceneQueryCache.delete(key);
+  }
+  while (sceneQueryCache.size > SCENE_CACHE_LIMIT) {
+    const oldest = sceneQueryCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    sceneQueryCache.delete(oldest);
+  }
+}
+
 /**
  * Searches only anonymous, public STAC endpoints. Catalog failure is isolated,
  * so one healthy provider can still return evidence. Access being free does not
  * imply commercial-use permission; every result carries conservative terms.
  */
-export async function querySatelliteScenes(input: SatelliteSceneQuery): Promise<BrokerScene[]> {
+async function querySatelliteScenesUncached(input: SatelliteSceneQuery): Promise<BrokerScene[]> {
   validateQuery(input);
   const normalizedInput: SatelliteSceneQuery = {
     ...input,
@@ -724,4 +751,22 @@ export async function querySatelliteScenes(input: SatelliteSceneQuery): Promise<
     .sort((left, right) => right.qualityScore - left.qualityScore || left.datetime.localeCompare(right.datetime));
   const selected = selectDiverseScenes(ranked, normalizedInput.maxScenes || 12);
   return withRoles(selected);
+}
+
+export async function querySatelliteScenes(input: SatelliteSceneQuery): Promise<BrokerScene[]> {
+  validateQuery(input);
+  trimSceneCache();
+  const key = sceneQueryCacheKey(input);
+  const cached = sceneQueryCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  const promise = querySatelliteScenesUncached(input);
+  sceneQueryCache.set(key, { expiresAt: Date.now() + SCENE_CACHE_TTL_MS, promise });
+  trimSceneCache();
+  try {
+    return await promise;
+  } catch (error) {
+    sceneQueryCache.delete(key);
+    throw error;
+  }
 }

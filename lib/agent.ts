@@ -16,7 +16,12 @@ import { buildMissionSpec } from "@/lib/mission";
 import { assessFeasibility, type ModelObservation } from "@/lib/feasibility";
 import { tryMeasureGeometry } from "@/lib/gis";
 import { buildEvidenceLedger } from "@/lib/evidence";
-import { extractLocationCandidate, parseDateRange } from "@/lib/request-parser";
+import {
+  extractLocationCandidate,
+  isPlausibleLocationCandidate,
+  parseCoordinatePair,
+  parseDateRange,
+} from "@/lib/request-parser";
 
 type KnownLocation = {
   names: string[];
@@ -27,6 +32,20 @@ type KnownLocation = {
 };
 
 const KNOWN_LOCATIONS: KnownLocation[] = [
+  {
+    names: ["madrid", "מדריד"],
+    canonical: "Madrid, Community of Madrid, Spain",
+    latitude: 40.4168,
+    longitude: -3.7038,
+    bbox: [-3.888, 40.312, -3.518, 40.643],
+  },
+  {
+    names: ["spain", "ספרד", "españa", "espana"],
+    canonical: "Spain",
+    latitude: 40.2085,
+    longitude: -3.713,
+    bbox: [-9.3929, 35.9469, 3.0395, 43.7483],
+  },
   {
     names: ["new orleans", "ניו אורלינס"],
     canonical: "New Orleans, Louisiana, USA",
@@ -272,9 +291,136 @@ function findKnownLocation(query: string) {
   return KNOWN_LOCATIONS.find((location) => location.names.some((name) => normalized.includes(name)));
 }
 
-function buildInterpreter(query: string): InterpreterResult {
+type ResolvedLocation = NonNullable<AnalysisResponse["location"]>;
+
+type NominatimResult = {
+  display_name?: unknown;
+  lat?: unknown;
+  lon?: unknown;
+  boundingbox?: unknown;
+  category?: unknown;
+  class?: unknown;
+  type?: unknown;
+  importance?: unknown;
+  place_rank?: unknown;
+  namedetails?: unknown;
+  address?: unknown;
+};
+
+const GEOCODE_TIMEOUT_MS = 6_000;
+const GEOCODE_CACHE_TTL_MS = 6 * 60 * 60 * 1_000;
+const GEOCODE_CACHE_LIMIT = 200;
+const geocodeCache = new Map<string, { expiresAt: number; value: ResolvedLocation | null }>();
+const EVENT_CACHE_TTL_MS = 5 * 60 * 1_000;
+const EVENT_TIMEOUT_MS = 6_000;
+const eventCache = new Map<string, { expiresAt: number; promise: Promise<EventEvidence[]> }>();
+
+function normalizedLocationText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9א-ת]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function knownResolvedLocation(known: KnownLocation): ResolvedLocation {
+  return {
+    name: known.canonical,
+    latitude: known.latitude,
+    longitude: known.longitude,
+    bbox: known.bbox,
+    source: "known-location",
+    matchQuality: "exact",
+    resultType: "curated-location",
+  };
+}
+
+function coordinateLocation(value: string): ResolvedLocation | null {
+  const coordinates = parseCoordinatePair(value);
+  if (!coordinates) return null;
+  const latitudeRadius = 0.1;
+  const longitudeRadius = Math.min(0.25, latitudeRadius / Math.max(Math.cos(coordinates.latitude * Math.PI / 180), 0.2));
+  return {
+    name: `${coordinates.latitude.toFixed(5)}, ${coordinates.longitude.toFixed(5)}`,
+    latitude: coordinates.latitude,
+    longitude: coordinates.longitude,
+    bbox: [
+      Math.max(-180, coordinates.longitude - longitudeRadius),
+      Math.max(-90, coordinates.latitude - latitudeRadius),
+      Math.min(180, coordinates.longitude + longitudeRadius),
+      Math.min(90, coordinates.latitude + latitudeRadius),
+    ],
+    source: "coordinates",
+    matchQuality: "exact",
+    resultType: "coordinates",
+  };
+}
+
+function finiteBbox(value: unknown, longitude: number, latitude: number): [number, number, number, number] | null {
+  if (!Array.isArray(value) || value.length !== 4) {
+    return [longitude - 0.2, latitude - 0.2, longitude + 0.2, latitude + 0.2];
+  }
+  const south = Number(value[0]);
+  const north = Number(value[1]);
+  const west = Number(value[2]);
+  const east = Number(value[3]);
+  if (![west, south, east, north].every(Number.isFinite)) return null;
+  if (west < -180 || east > 180 || south < -90 || north > 90 || west >= east || south >= north) return null;
+  if (longitude < west || longitude > east || latitude < south || latitude > north) return null;
+  return [west, south, east, north];
+}
+
+function resultNames(result: NominatimResult) {
+  const values = [typeof result.display_name === "string" ? result.display_name : ""];
+  if (result.namedetails && typeof result.namedetails === "object" && !Array.isArray(result.namedetails)) {
+    values.push(...Object.values(result.namedetails).filter((value): value is string => typeof value === "string"));
+  }
+  if (result.address && typeof result.address === "object" && !Array.isArray(result.address)) {
+    values.push(...Object.values(result.address).filter((value): value is string => typeof value === "string"));
+  }
+  return normalizedLocationText(values.join(" "));
+}
+
+function scoreNominatimResult(candidate: string, result: NominatimResult) {
+  const candidateNormalized = normalizedLocationText(candidate);
+  const names = resultNames(result);
+  const tokens = candidateNormalized.split(" ").filter((token) => token.length > 1);
+  const matchedTokens = tokens.filter((token) => names.includes(token)).length;
+  const lexicalRatio = tokens.length ? matchedTokens / tokens.length : 0;
+  const importance = typeof result.importance === "number" && Number.isFinite(result.importance)
+    ? Math.max(0, Math.min(1, result.importance))
+    : 0;
+  const type = String(result.type || result.category || result.class || "").toLowerCase();
+  const usefulType = [
+    "city", "town", "village", "municipality", "administrative", "country", "state", "region",
+    "county", "island", "peak", "volcano", "mountain", "water", "bay", "river", "forest",
+  ].some((value) => type.includes(value));
+  const exact = Boolean(candidateNormalized && names.split(" ").includes(candidateNormalized));
+  return {
+    score: lexicalRatio * 65 + importance * 25 + (usefulType ? 10 : 0) + (exact ? 15 : 0),
+    lexicalRatio,
+    importance,
+    type: type || "place",
+  };
+}
+
+function trimGeocodeCache() {
+  const now = Date.now();
+  for (const [key, entry] of geocodeCache) {
+    if (entry.expiresAt <= now) geocodeCache.delete(key);
+  }
+  while (geocodeCache.size > GEOCODE_CACHE_LIMIT) {
+    const oldest = geocodeCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    geocodeCache.delete(oldest);
+  }
+}
+
+function buildInterpreter(query: string, referenceDate: string): InterpreterResult {
   const intent = inferIntent(query);
-  const dates = parseDateRange(query);
+  const dates = parseDateRange(query, new Date(`${referenceDate}T12:00:00Z`));
   const known = findKnownLocation(query);
   return {
     intent,
@@ -288,49 +434,79 @@ function buildInterpreter(query: string): InterpreterResult {
   };
 }
 
-async function geocode(locationText: string, query: string, alternateLocationText: string | null = null) {
+export async function resolveLocation(locationText: string, query: string, alternateLocationText: string | null = null) {
   const known = findKnownLocation(query) || findKnownLocation(locationText) || findKnownLocation(alternateLocationText || "");
-  if (known) {
-    return {
-      name: known.canonical,
-      latitude: known.latitude,
-      longitude: known.longitude,
-      bbox: known.bbox,
-    };
-  }
+  if (known) return knownResolvedLocation(known);
+
+  const directCoordinates = coordinateLocation(locationText) || coordinateLocation(query) || coordinateLocation(alternateLocationText || "");
+  if (directCoordinates) return directCoordinates;
+
   const candidates = Array.from(new Set([locationText, alternateLocationText]
     .map((candidate) => candidate?.trim() || "")
-    .filter(Boolean)));
+    .filter((candidate) => candidate && isPlausibleLocationCandidate(candidate))));
 
   for (const candidate of candidates) {
+    const cacheKey = normalizedLocationText(candidate);
+    const cached = geocodeCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      if (cached.value) return cached.value;
+      continue;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), GEOCODE_TIMEOUT_MS);
     try {
       const url = new URL("https://nominatim.openstreetmap.org/search");
       url.searchParams.set("q", candidate);
       url.searchParams.set("format", "jsonv2");
-      url.searchParams.set("limit", "1");
+      url.searchParams.set("limit", "5");
+      url.searchParams.set("addressdetails", "1");
+      url.searchParams.set("namedetails", "1");
+      url.searchParams.set("accept-language", "he,en");
       const response = await fetch(url, {
+        signal: controller.signal,
         headers: {
           Accept: "application/json",
           "User-Agent": "GeoLens-Agent/1.0 (standalone EO analysis application)",
         },
       });
       if (!response.ok) continue;
-      const results = (await response.json()) as Array<{
-        display_name: string;
-        lat: string;
-        lon: string;
-        boundingbox: [string, string, string, string];
-      }>;
-      const first = results[0];
-      if (!first) continue;
-      const latitude = Number(first.lat);
-      const longitude = Number(first.lon);
-      const bbox: [number, number, number, number] = first.boundingbox
-        ? [Number(first.boundingbox[2]), Number(first.boundingbox[0]), Number(first.boundingbox[3]), Number(first.boundingbox[1])]
-        : [longitude - 0.2, latitude - 0.2, longitude + 0.2, latitude + 0.2];
-      return { name: first.display_name, latitude, longitude, bbox };
+      const payload = await response.json() as unknown;
+      if (!Array.isArray(payload)) continue;
+      const ranked = payload
+        .filter((result): result is NominatimResult => Boolean(result) && typeof result === "object" && !Array.isArray(result))
+        .map((result) => ({ result, ...scoreNominatimResult(candidate, result) }))
+        .sort((left, right) => right.score - left.score || right.importance - left.importance);
+
+      for (const item of ranked) {
+        const latitude = Number(item.result.lat);
+        const longitude = Number(item.result.lon);
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) continue;
+        const bbox = finiteBbox(item.result.boundingbox, longitude, latitude);
+        if (!bbox) continue;
+        const displayName = typeof item.result.display_name === "string" ? item.result.display_name.trim() : "";
+        if (!displayName) continue;
+        const translationFallback = item.lexicalRatio === 0 && item.importance >= 0.25;
+        if (item.lexicalRatio < 0.5 && !translationFallback) continue;
+        const resolved: ResolvedLocation = {
+          name: displayName,
+          latitude,
+          longitude,
+          bbox,
+          source: "validated-geocoder",
+          matchQuality: item.lexicalRatio >= 1 ? "exact" : item.lexicalRatio >= 0.5 ? "strong" : "translated",
+          resultType: item.type,
+        };
+        geocodeCache.set(cacheKey, { expiresAt: Date.now() + GEOCODE_CACHE_TTL_MS, value: resolved });
+        trimGeocodeCache();
+        return resolved;
+      }
+      geocodeCache.set(cacheKey, { expiresAt: Date.now() + 15 * 60 * 1_000, value: null });
+      trimGeocodeCache();
     } catch {
       continue;
+    } finally {
+      clearTimeout(timeout);
     }
   }
   return null;
@@ -431,17 +607,64 @@ async function queryScenes(
   queryText: string,
 ) {
   const window = chooseSceneWindow(interpreter, events);
-  const brokerScenes = await querySatelliteScenes({
-    intent: interpreter.intent,
-    bbox: location.bbox,
-    startDate: window.start,
-    endDate: window.end,
-    targetDate: events[0]?.date.slice(0, 10) || (/^\d{4}-\d{2}-\d{2}$/.test(interpreter.dateLabel) ? interpreter.dateLabel : interpreter.endDate),
-    queryText,
-    maxScenes: interpreter.intent === "wildfire" || interpreter.intent === "change" ? 12 : 8,
-    timeoutMs: 8_000,
-  });
-  if (brokerScenes.length) return brokerScenes;
+  const exactEventDate = events[0]?.date.slice(0, 10)
+    || (/^\d{4}-\d{2}-\d{2}$/.test(interpreter.dateLabel) ? interpreter.dateLabel : null);
+  const requiresTemporalPair = ["wildfire", "crop", "change"].includes(interpreter.intent);
+  let brokerScenes: SceneResult[];
+
+  if (requiresTemporalPair) {
+    const baselineAnchor = exactEventDate
+      ? toIsoDate(addDays(new Date(`${exactEventDate}T12:00:00Z`), -1))
+      : interpreter.startDate;
+    const targetAnchor = exactEventDate || interpreter.endDate;
+    const baselineStart = toIsoDate(addDays(new Date(`${baselineAnchor}T12:00:00Z`), -45));
+    const targetEnd = toIsoDate(addDays(new Date(`${targetAnchor}T12:00:00Z`), 45));
+    const [baseline, target] = await Promise.all([
+      querySatelliteScenes({
+        intent: interpreter.intent,
+        bbox: location.bbox,
+        startDate: baselineStart,
+        endDate: baselineAnchor,
+        targetDate: baselineAnchor,
+        queryText,
+        maxScenes: 6,
+        timeoutMs: 6_000,
+      }),
+      querySatelliteScenes({
+        intent: interpreter.intent,
+        bbox: location.bbox,
+        startDate: targetAnchor,
+        endDate: targetEnd,
+        targetDate: targetAnchor,
+        queryText,
+        maxScenes: 6,
+        timeoutMs: 6_000,
+      }),
+    ]);
+    const combined = new Map<string, SceneResult>();
+    for (const [index, scene] of baseline.entries()) {
+      combined.set(scene.canonicalSceneId, { ...scene, role: index === 0 ? "primary" : "context" });
+    }
+    for (const [index, scene] of target.entries()) {
+      const existing = combined.get(scene.canonicalSceneId);
+      if (!existing || scene.qualityScore > existing.qualityScore) {
+        combined.set(scene.canonicalSceneId, { ...scene, role: index === 0 ? "confirmation" : "context" });
+      }
+    }
+    brokerScenes = [...combined.values()].slice(0, 12);
+  } else {
+    brokerScenes = await querySatelliteScenes({
+      intent: interpreter.intent,
+      bbox: location.bbox,
+      startDate: window.start,
+      endDate: window.end,
+      targetDate: exactEventDate || interpreter.endDate,
+      queryText,
+      maxScenes: 8,
+      timeoutMs: 6_000,
+    });
+  }
+  if (brokerScenes.length || process.env.GEOLENS_ENABLE_LEGACY_STAC_FALLBACK !== "1") return brokerScenes;
 
   const collections = collectionsFor(interpreter.intent);
   const results: SceneResult[] = [];
@@ -534,12 +757,14 @@ function haversineKm(a: [number, number], b: [number, number]) {
   return earth * 2 * Math.asin(Math.sqrt(h));
 }
 
-async function queryEvents(
+async function queryEventsUncached(
   interpreter: InterpreterResult,
   location: NonNullable<AnalysisResponse["location"]>,
 ) {
   const category = interpreter.intent === "volcano" ? "volcanoes" : interpreter.intent === "wildfire" ? "wildfires" : interpreter.intent === "flood" ? "floods" : null;
   if (!category) return [];
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), EVENT_TIMEOUT_MS);
   try {
     const url = new URL("https://eonet.gsfc.nasa.gov/api/v3/events");
     url.searchParams.set("category", category);
@@ -547,7 +772,10 @@ async function queryEvents(
     url.searchParams.set("start", interpreter.startDate);
     url.searchParams.set("end", interpreter.endDate);
     url.searchParams.set("limit", "100");
-    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
+    });
     if (!response.ok) return [];
     const data = (await response.json()) as {
       events?: Array<{
@@ -583,7 +811,38 @@ async function queryEvents(
       .slice(0, 8);
   } catch {
     return [];
+  } finally {
+    clearTimeout(timeout);
   }
+}
+
+async function queryEvents(
+  interpreter: InterpreterResult,
+  location: NonNullable<AnalysisResponse["location"]>,
+) {
+  const category = interpreter.intent === "volcano" ? "volcanoes" : interpreter.intent === "wildfire" ? "wildfires" : interpreter.intent === "flood" ? "floods" : null;
+  if (!category) return [];
+  const key = JSON.stringify({
+    category,
+    startDate: interpreter.startDate,
+    endDate: interpreter.endDate,
+    center: [location.longitude, location.latitude].map((value) => Math.round(value * 10_000) / 10_000),
+    bbox: location.bbox.map((value) => Math.round(value * 10_000) / 10_000),
+  });
+  const now = Date.now();
+  for (const [cachedKey, entry] of eventCache) {
+    if (entry.expiresAt <= now) eventCache.delete(cachedKey);
+  }
+  const cached = eventCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.promise;
+  const promise = queryEventsUncached(interpreter, location);
+  eventCache.set(key, { expiresAt: now + EVENT_CACHE_TTL_MS, promise });
+  while (eventCache.size > 100) {
+    const oldest = eventCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    eventCache.delete(oldest);
+  }
+  return promise;
 }
 
 function buildSteps(
@@ -593,6 +852,7 @@ function buildSteps(
   events: EventEvidence[],
   model: ModelRun,
   geometry: GeoJsonGeometry | null,
+  catalogSearchSkipped = false,
 ) {
   const steps: AgentStep[] = [
     {
@@ -616,8 +876,10 @@ function buildSteps(
     {
       id: "sources",
       label: "איסוף ראיות מקור",
-      detail: `${scenes.length} סצנות לוויין ו-${events.length} אירועים קטלוגיים נמצאו.`,
-      status: scenes.length || events.length ? "completed" : "warning",
+      detail: catalogSearchSkipped
+        ? "חיפוש הסצנות לא בוצע משום שאזור המשימה גדול מדי לכיסוי אמין במספר מצומצם של תוצאות."
+        : `${scenes.length} סצנות לוויין ו-${events.length} אירועים קטלוגיים נמצאו.`,
+      status: catalogSearchSkipped ? "blocked" : scenes.length || events.length ? "completed" : "warning",
     },
     {
       id: "infer",
@@ -649,10 +911,13 @@ function buildLimitations(
   events: EventEvidence[],
   geometry: GeoJsonGeometry | null,
   model: ModelRun,
+  catalogSearchSkipped = false,
 ) {
   const limitations: string[] = [];
-  if (!scenes.length) limitations.push("לא נמצאה סצנת לוויין מתאימה בקטלוגים ובחלון הזמן שנבדקו.");
-  if (!events.length && ["flood", "wildfire", "volcano"].includes(intent)) limitations.push("לא נמצא דיווח NASA EONET סמוך למקום ולזמן. היעדר דיווח אינו הוכחה שלא התרחש אירוע.");
+  if (!scenes.length) limitations.push(catalogSearchSkipped
+    ? "חיפוש סצנות לא בוצע, משום שאזור המשימה גדול מכדי להסיק מסקנה מכיסוי חלקי."
+    : "לא נמצאה סצנת לוויין מתאימה בקטלוגים ובחלון הזמן שנבדקו.");
+  if (!events.length && !catalogSearchSkipped && ["flood", "wildfire", "volcano"].includes(intent)) limitations.push("לא נמצא דיווח NASA EONET סמוך למקום ולזמן. היעדר דיווח אינו הוכחה שלא התרחש אירוע.");
   if (!geometry) limitations.push("אין פוליגון זיהוי מאומת. המפה מציגה רק אזור חיפוש, טביעת רגל של סצנה ונקודות קטלוגיות.");
   if (model.status === "not-configured") limitations.push(`נבחר ${model.name}, אך טרם הוגדרה כתובת השירות שלו.`);
   if (model.status === "blocked") limitations.push(model.message);
@@ -667,11 +932,32 @@ function buildLimitations(
   return limitations;
 }
 
-export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
+export async function analyzeRequest(
+  query: string,
+  options: { referenceDate?: string } = {},
+): Promise<AnalysisResponse> {
   const cleanedQuery = query.trim().slice(0, 1_500);
-  const fallbackInterpreter = buildInterpreter(cleanedQuery);
-  const { interpretation: interpreter, alternateLocationText, brain } = await planWithOpenRouter(cleanedQuery, fallbackInterpreter);
-  const location = await geocode(interpreter.locationText, cleanedQuery, alternateLocationText);
+  const serverDate = new Date().toISOString().slice(0, 10);
+  const candidateReferenceDate = typeof options.referenceDate === "string" ? options.referenceDate : "";
+  const parsedReferenceDate = /^\d{4}-\d{2}-\d{2}$/.test(candidateReferenceDate)
+    ? new Date(`${candidateReferenceDate}T12:00:00Z`)
+    : null;
+  const referenceDate = parsedReferenceDate
+    && Number.isFinite(parsedReferenceDate.getTime())
+    && parsedReferenceDate.toISOString().slice(0, 10) === candidateReferenceDate
+      ? candidateReferenceDate
+      : serverDate;
+  const fallbackInterpreter = buildInterpreter(cleanedQuery, referenceDate);
+  let plan = await planWithOpenRouter(cleanedQuery, fallbackInterpreter, false, referenceDate);
+  let interpreter = plan.interpretation;
+  let brain = plan.brain;
+  let location = await resolveLocation(interpreter.locationText, cleanedQuery, plan.alternateLocationText);
+  if (!location && brain.provider === "GeoLens" && brain.status === "completed") {
+    plan = await planWithOpenRouter(cleanedQuery, fallbackInterpreter, true, referenceDate);
+    interpreter = plan.interpretation;
+    brain = plan.brain;
+    location = await resolveLocation(interpreter.locationText, cleanedQuery, plan.alternateLocationText);
+  }
   const recipe = RECIPES[interpreter.intent];
 
   if (!location) {
@@ -686,6 +972,9 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
       status: "blocked",
       findingStatus: "indeterminate",
       summary: "לא ניתן לקבוע דבר לפני פתרון מקום ויצירת AOI מאומת.",
+      eligibleSceneIds: [],
+      realModelRun: false,
+      canConcludeAbsence: false,
       checks: [{
         code: "LOCATION_UNRESOLVED",
         status: "fail",
@@ -740,8 +1029,26 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
   }
 
   const mission = buildMissionSpec({ interpreter, location });
-  const events = await queryEvents(interpreter, location);
-  const scenes = await queryScenes(interpreter, location, events, cleanedQuery);
+  const aoiMeasurements = tryMeasureGeometry(mission.aoi.geometry);
+  const oversizedSpecialistAoi = interpreter.intent !== "imagery"
+    && aoiMeasurements?.areaKm2 !== null
+    && aoiMeasurements?.areaKm2 !== undefined
+    && aoiMeasurements.areaKm2 > 150_000;
+  let events: EventEvidence[] = [];
+  let scenes: SceneResult[] = [];
+  if (!oversizedSpecialistAoi) {
+    const hasExactDate = /^\d{4}-\d{2}-\d{2}$/.test(interpreter.dateLabel);
+    const eventIntent = ["flood", "wildfire", "volcano"].includes(interpreter.intent);
+    if (hasExactDate || !eventIntent) {
+      [events, scenes] = await Promise.all([
+        queryEvents(interpreter, location),
+        queryScenes(interpreter, location, [], cleanedQuery),
+      ]);
+    } else {
+      events = await queryEvents(interpreter, location);
+      scenes = await queryScenes(interpreter, location, events, cleanedQuery);
+    }
+  }
   const modelResult = await runDedicatedModel({ query: cleanedQuery, interpreter, location, scenes, events });
   const geometry = modelResult.geometry;
   const generatedAt = new Date().toISOString();
@@ -762,6 +1069,8 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
     scenes,
     model: modelResult.model,
     modelObservation,
+    catalogConfirmed: events.length > 0,
+    catalogSearchSkipped: oversizedSpecialistAoi,
   });
   const findingStatus = feasibility.findingStatus;
   const detectionMode: AnalysisResponse["detectionMode"] = findingStatus === "detected"
@@ -780,19 +1089,40 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
       ? "high"
       : confidenceScore >= 0.55
         ? "medium"
-        : "low";
-  const verdict = findingStatus === "detected"
+      : "low";
+  const analysisReadyCount = feasibility.eligibleSceneIds.length;
+  const blockingMessages = feasibility.checks
+    .filter((check) => check.status === "fail")
+    .map((check) => check.message)
+    .slice(0, 2);
+  const verdict = interpreter.intent === "imagery"
+    ? scenes.length
+      ? "הדימות הוחזר עם מטא-דאטה וקישורי מקור. זו בקשת דימות, ולכן אין צורך לטעון שאובייקט זוהה או לא זוהה."
+      : "לא נמצאה סצנת מקור מתאימה בחלון ובקטלוגים שנבדקו."
+    : findingStatus === "detected"
     ? `הוחזרה גאומטריית זיהוי תקפה מ-${modelResult.model.name}, עם סצנות מקור ויומן ראיות.`
     : findingStatus === "not-detected"
       ? `המודל ${modelResult.model.name} השלים פענוח על קלט שעבר את שער ההיתכנות ולא החזיר ממצא.`
       : feasibility.status === "blocked"
-        ? "המשימה אינה ניתנת להכרעה מהקלט הזמין. הסוכן עצר בלי לייצר זיהוי מטעה."
+        ? oversizedSpecialistAoi
+          ? "המשימה נעצרה לפני חיפוש חלקי שעלול ליצור מסקנה מטעה."
+          : `המשימה אינה ניתנת להכרעה מהקלט הזמין. ${blockingMessages.join(" ") || "הסוכן עצר בלי לייצר זיהוי מטעה."}`
         : events.length
-          ? `נמצאה רשומת אירוע חיצונית ו-${scenes.length} סצנות מקור, אך עדיין אין גאומטריית זיהוי ממודל.`
-          : `נמצאו ${scenes.length} סצנות מקור, אך אין ראיה מספקת לקבוע אם היעד קיים.`;
-  const answer = `${recipe.title} עבור ${location.name}. הסוכן בחר ב-${recipe.primarySensor}, בדק את הטווח ${interpreter.dateLabel}, ואסף ${scenes.length} סצנות ו-${events.length} רשומות אירוע. ${verdict}`;
-  const steps = buildSteps(interpreter, location, scenes, events, modelResult.model, geometry);
-  const limitations = buildLimitations(interpreter.intent, scenes, events, geometry, modelResult.model);
+          ? "קיימת רשומת אירוע חיצונית, אך עדיין אין גאומטריית זיהוי ממודל."
+          : "אין ראיה מספקת לקבוע אם היעד קיים.";
+  const modelExecutionStatement = feasibility.realModelRun
+    ? `ריצת ${modelResult.model.name} הושלמה ותועדה.`
+    : interpreter.intent === "imagery"
+      ? "הבקשה היא לבחירת דימות ולכן לא נדרשה ריצת מודל סגמנטציה."
+      : oversizedSpecialistAoi
+        ? "לא בוצע פענוח פיקסלים."
+        : `לא בוצע פענוח פיקסלים: ${modelResult.model.message}`;
+  const evidenceCollectionStatement = oversizedSpecialistAoi
+    ? "חיפוש הסצנות נעצר לפני פנייה לקטלוגים, משום שה-AOI גדול מדי לפענוח אמין בכיסוי חלקי."
+    : `נמצאו ${scenes.length} סצנות, מתוכן ${analysisReadyCount} כשירות לניתוח, וכן ${events.length} רשומות אירוע.`;
+  const answer = `${recipe.title} עבור ${location.name}. הסוכן בחר ב-${recipe.primarySensor} ובדק את הטווח ${interpreter.dateLabel}. ${evidenceCollectionStatement} ${modelExecutionStatement} ${verdict}`;
+  const steps = buildSteps(interpreter, location, scenes, events, modelResult.model, geometry, oversizedSpecialistAoi);
+  const limitations = buildLimitations(interpreter.intent, scenes, events, geometry, modelResult.model, oversizedSpecialistAoi);
   const ledger = buildEvidenceLedger({
     query: cleanedQuery,
     mission,
@@ -823,7 +1153,9 @@ export async function analyzeRequest(query: string): Promise<AnalysisResponse> {
     detectionGeometry: geometry,
     steps,
     limitations,
-    clarification: null,
+    clarification: feasibility.checks.some((check) => check.code === "AOI_TOO_LARGE" && check.status === "fail")
+      ? `המקום ${location.name} זוהה בהצלחה, אך זהו אזור גדול מדי לפענוח מלא במספר מצומצם של סצנות. ציין מחוז, עיר, שמורה או קואורדינטות בתוך האזור.`
+      : null,
     brain,
     model: modelResult.model,
     mission,

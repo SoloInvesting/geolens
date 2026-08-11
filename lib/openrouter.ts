@@ -1,8 +1,9 @@
 import type { AnalysisIntent, BrainRun, InterpreterResult } from "@/app/types";
+import { isPlausibleLocationCandidate, parseCoordinatePair } from "@/lib/request-parser";
 
 const OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_FREE_MODEL = "openrouter/free";
-const REQUEST_TIMEOUT_MS = 25_000;
+const REQUEST_TIMEOUT_MS = 8_000;
 const DEFAULT_DATE_LABEL = "45 הימים האחרונים";
 
 const INTENTS: AnalysisIntent[] = [
@@ -135,7 +136,9 @@ function mergeInterpretation(fallback: InterpreterResult, planned: PlannerPayloa
   return {
     intent,
     intentLabel: intentLabel(intent),
-    locationText: fallback.locationText || planned.locationText,
+    locationText: isPlausibleLocationCandidate(planned.locationText)
+      ? planned.locationText
+      : fallback.locationText,
     dateLabel: usePlannedDate ? planned.dateLabel || fallback.dateLabel : fallback.dateLabel,
     startDate: usePlannedDate ? planned.startDate : fallback.startDate,
     endDate: usePlannedDate ? planned.endDate : fallback.endDate,
@@ -169,7 +172,28 @@ export function localBrainState() {
   return brainState();
 }
 
-export async function planWithOpenRouter(query: string, fallback: InterpreterResult) {
+export async function planWithOpenRouter(
+  query: string,
+  fallback: InterpreterResult,
+  forceExternal = false,
+  referenceDate = new Date().toISOString().slice(0, 10),
+) {
+  const localLocationIsComplete = Boolean(
+    parseCoordinatePair(fallback.locationText)
+    || isPlausibleLocationCandidate(fallback.locationText),
+  );
+  if (localLocationIsComplete && !forceExternal) {
+    return {
+      interpretation: fallback,
+      alternateLocationText: null,
+      brain: brainState({
+        requestedModel: "not-requested",
+        status: "completed",
+        message: "המקום, הזמן וסוג המשימה פוענחו באופן דטרמיניסטי. לא נשלחה בקשה למודל שפה חיצוני.",
+      }),
+    };
+  }
+
   const apiKey = configuredApiKey();
   if (!apiKey) {
     return {
@@ -210,7 +234,7 @@ export async function planWithOpenRouter(query: string, fallback: InterpreterRes
               "You are the request planner for an evidence-first Earth-observation application.",
               "Parse the request only. Never claim that an event or object was observed.",
               "Do not invent a location, date, satellite scene, measurement, or confidence score.",
-              `Today is ${new Date().toISOString().slice(0, 10)}. Resolve relative dates against today.`,
+              `Today is ${referenceDate}. Resolve relative dates against today.`,
               "Keep the supplied fallback dates when the request has no explicit temporal instruction.",
               `Validated fallback: ${JSON.stringify(fallback)}`,
             ].join(" "),

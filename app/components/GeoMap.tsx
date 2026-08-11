@@ -168,7 +168,7 @@ export function GeoMap({ analysis }: GeoMapProps) {
       <div ref={containerRef} className="geo-map" />
       <div className="map-status">
         <span className="live-dot" />
-        {analysis ? `${analysis.scenes.length} סצנות · ${analysis.events.length} אירועים · ${analysis.findingStatus}` : "ממתין לבקשת פענוח"}
+        {analysis ? `${analysis.scenes.length} סצנות · ${analysis.feasibility.eligibleSceneIds.length} כשירות לניתוח · ${analysis.events.length} אירועים · ${analysis.findingStatus}` : "ממתין לבקשת פענוח"}
       </div>
     </div>
   );

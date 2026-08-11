@@ -24,6 +24,7 @@ export type FeasibilityReasonCode =
   | "MISSING_SENSOR"
   | "MISSING_BANDS"
   | "INSUFFICIENT_SCENE_COUNT"
+  | "INSUFFICIENT_INDEPENDENT_SOURCES"
   | "RESOLUTION_TOO_COARSE"
   | "CLOUD_COVER_TOO_HIGH"
   | "ASSET_UNAVAILABLE"
@@ -65,7 +66,7 @@ export type ModelRun = {
 
 export type BrainRun = {
   provider: "OpenRouter" | "GeoLens";
-  requestedModel: "openrouter/free";
+  requestedModel: "openrouter/free" | "not-requested";
   actualModel: string | null;
   status: "completed" | "fallback" | "not-configured";
   freeOnly: true;
@@ -155,7 +156,7 @@ export type MissionSpec = {
     label: string;
     bbox: [number, number, number, number];
     geometry: GeoJsonGeometry;
-    source: "validated-geocoder" | "known-location";
+    source: "validated-geocoder" | "known-location" | "coordinates";
   };
   temporal: {
     startDate: string;
@@ -189,6 +190,9 @@ export type FeasibilityReport = {
   findingStatus: FindingStatus;
   summary: string;
   checks: FeasibilityCheck[];
+  eligibleSceneIds: string[];
+  realModelRun: boolean;
+  canConcludeAbsence: boolean;
 };
 
 export type GeometryMeasurements = {
@@ -245,6 +249,9 @@ export type AnalysisResponse = {
     latitude: number;
     longitude: number;
     bbox: [number, number, number, number];
+    source: "known-location" | "coordinates" | "validated-geocoder";
+    matchQuality: "exact" | "strong" | "translated";
+    resultType: string;
   } | null;
   recipe: AnalysisRecipe;
   answer: string;

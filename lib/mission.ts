@@ -11,7 +11,7 @@ export type MissionLocation = {
   latitude: number;
   longitude: number;
   bbox: [number, number, number, number];
-  source?: "validated-geocoder" | "known-location";
+  source?: "validated-geocoder" | "known-location" | "coordinates";
 };
 
 export type BuildMissionInput = {

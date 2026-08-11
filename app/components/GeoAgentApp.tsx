@@ -38,6 +38,19 @@ function loadSavedAnalysis() {
     }
     return {
       ...parsed,
+      location: parsed.location ? {
+        ...parsed.location,
+        source: parsed.location.source || "validated-geocoder",
+        matchQuality: parsed.location.matchQuality || "translated",
+        resultType: parsed.location.resultType || "legacy-result",
+      } : null,
+      feasibility: {
+        ...parsed.feasibility,
+        eligibleSceneIds: parsed.feasibility.eligibleSceneIds
+          || parsed.scenes.filter((scene) => scene.assetAccess === "public-http").map((scene) => scene.id),
+        realModelRun: parsed.feasibility.realModelRun ?? parsed.model.status === "completed",
+        canConcludeAbsence: parsed.feasibility.canConcludeAbsence ?? false,
+      },
       brain: parsed.brain || {
         provider: "GeoLens",
         requestedModel: "openrouter/free",
@@ -70,6 +83,7 @@ function modeLabel(result: AnalysisResponse) {
 }
 
 function findingLabel(result: AnalysisResponse) {
+  if (result.interpretation.intent === "imagery") return result.scenes.length ? "נמצא דימות מתאים" : "לא נמצא דימות";
   if (result.findingStatus === "detected") return "זוהה";
   if (result.findingStatus === "not-detected") return "לא זוהה לאחר פענוח";
   return "לא ניתן לקבוע";
@@ -85,14 +99,19 @@ function modelStatusLabel(model: ModelRun) {
   if (model.status === "completed") return "פענוח מודל הושלם";
   if (model.status === "blocked") return "המודל לא הופעל בגלל מגבלת קלט";
   if (model.status === "failed") return "שירות המודל לא השלים פענוח";
-  if (model.status === "not-configured") return "מודל ייעודי מוכן לחיבור";
+  if (model.status === "not-configured") return "שירות המודל אינו מחובר";
   return "לא נדרש מודל ייעודי";
 }
 
 function brainStatusLabel(brain: BrainRun) {
-  if (brain.status === "completed") return "מוח הסוכן מחובר";
+  if (brain.status === "completed") return brain.provider === "GeoLens" ? "מפענח השפה המקומי פעל" : "מפענח השפה החיצוני פעל";
   if (brain.status === "not-configured") return "OpenRouter אינו מוגדר";
   return "פענוח מקומי פעיל";
+}
+
+function brainModelLabel(brain: BrainRun) {
+  if (brain.provider === "GeoLens") return "GeoLens deterministic parser";
+  return brain.actualModel || brain.requestedModel;
 }
 
 function sourceRole(scene: SceneResult) {
@@ -241,6 +260,14 @@ function ledgerCsv(result: AnalysisResponse) {
   return [header, ...rows].map((row) => row.map(escape).join(",")).join("\n");
 }
 
+function localCalendarDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function ResultMessage({ result }: { result: AnalysisResponse }) {
   return (
     <div className="assistant-message">
@@ -275,6 +302,14 @@ function ResultMessage({ result }: { result: AnalysisResponse }) {
           <div>
             <span>ביטחון מכויל</span>
             <strong>{confidenceLabel(result)}{result.confidenceScore === null ? "" : ` · ${Math.round(result.confidenceScore * 100)}%`}</strong>
+          </div>
+          <div>
+            <span>סצנות כשירות לניתוח</span>
+            <strong>{result.feasibility.eligibleSceneIds.length} מתוך {result.scenes.length}</strong>
+          </div>
+          <div>
+            <span>ריצת מודל פיקסלים</span>
+            <strong>{result.feasibility.realModelRun ? "בוצעה" : "לא בוצעה"}</strong>
           </div>
         </section>
 
@@ -357,7 +392,7 @@ function ResultMessage({ result }: { result: AnalysisResponse }) {
                 <span className="eyebrow">ראיות מקור</span>
                 <h3>הדמאות הלוויין שנבחרו</h3>
               </div>
-              <span>{result.scenes.length} סצנות</span>
+              <span>{result.scenes.length} נמצאו · {result.feasibility.eligibleSceneIds.length} כשירות לניתוח</span>
             </div>
             <div className="scene-grid">
               {result.scenes.slice(0, 4).map((scene) => <SceneCard key={scene.id} scene={scene} />)}
@@ -425,7 +460,7 @@ function ResultMessage({ result }: { result: AnalysisResponse }) {
         <div className={`brain-status brain-${result.brain.status}`}>
           <span className={result.brain.status === "completed" ? "model-connected" : "model-ready"} />
           <div>
-            <strong>{brainStatusLabel(result.brain)} · {result.brain.actualModel || result.brain.requestedModel}</strong>
+            <strong>{brainStatusLabel(result.brain)} · {brainModelLabel(result.brain)}</strong>
             <p>{result.brain.message}</p>
             <small>מסלול חינמי בלבד, ללא מעבר אוטומטי למודל בתשלום</small>
           </div>
@@ -489,7 +524,10 @@ export function GeoAgentApp() {
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: text }),
+        body: JSON.stringify({
+          query: text,
+          clientDate: localCalendarDate(),
+        }),
       });
       const payload = (await response.json()) as AnalysisResponse | { error: string };
       if (!response.ok || "error" in payload) throw new Error("error" in payload ? payload.error : "הניתוח נכשל");

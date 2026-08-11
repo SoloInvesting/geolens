@@ -27,10 +27,11 @@ export type FeasibilityInput = {
   model?: ModelRun | null;
   modelObservation?: ModelObservation | null;
   catalogConfirmed?: boolean;
+  catalogSearchSkipped?: boolean;
   modelDisagreement?: boolean;
 };
 
-type CheckDimension = "coverage" | "resolution" | "cloud" | "sensor" | "bands" | "time" | "model";
+type CheckDimension = "coverage" | "resolution" | "cloud" | "sensor" | "bands" | "time" | "evidence" | "model";
 
 export type DetailedFeasibilityCheck = FeasibilityCheck & {
   dimension: CheckDimension;
@@ -167,12 +168,19 @@ export function assessFeasibility(input: FeasibilityInput): FeasibilityAssessmen
   let eligible = [...input.scenes];
   const aoiMeasurements = tryMeasureGeometry(input.mission.aoi.geometry);
   if (aoiMeasurements && aoiMeasurements.areaKm2 !== null && aoiMeasurements.areaKm2 > 150_000) {
-    addCheck(checks, "coverage", "warning", "AOI_TOO_LARGE", `אזור החיפוש הוא כ-${Math.round(aoiMeasurements.areaKm2).toLocaleString("he-IL")} קמ״ר. מומלץ לצמצם אותו כדי למנוע דילוג על סצנות ולשפר דיוק.`);
+    const status = requiresSpecialistModel ? "fail" : "warning";
+    addCheck(
+      checks,
+      "coverage",
+      status,
+      "AOI_TOO_LARGE",
+      `אזור החיפוש הוא כ-${Math.round(aoiMeasurements.areaKm2).toLocaleString("he-IL")} קמ״ר. ${requiresSpecialistModel ? "פענוח אובייקטים על מספר קטן של סצנות לא יכסה אותו באופן אמין, ולכן נדרש אזור ממוקד יותר." : "מומלץ לצמצם אותו כדי למנוע דילוג על סצנות ולשפר דיוק."}`,
+    );
   }
 
-  if (!eligible.length) {
+  if (!eligible.length && !input.catalogSearchSkipped) {
     addCheck(checks, "coverage", "fail", "NO_SCENES", "לא נמצאו סצנות מקור עבור אזור וזמן המשימה.");
-  } else {
+  } else if (eligible.length) {
     addCheck(checks, "coverage", "pass", "NO_SCENES", `נמצאו ${eligible.length} סצנות מקור מועמדות.`, eligible.map((scene) => scene.id));
 
     const sensorMatches = eligible.filter((scene) => sceneMatchesPreferredSensor(scene, policy.preferredSensors));
@@ -184,10 +192,10 @@ export function assessFeasibility(input: FeasibilityInput): FeasibilityAssessmen
       eligible = sensorMatches;
     }
 
-    if (eligible.length && requiresSpecialistModel) {
+    if (eligible.length) {
       const accessible = eligible.filter((scene) => scene.assetAccess === "public-http" && scene.assets.length > 0);
       if (!accessible.length) {
-        addCheck(checks, "coverage", "fail", "ASSET_UNAVAILABLE", "נמצאו רשומות קטלוג, אך אין נכסי פיקסלים ציבוריים שניתן למסור לשירות הפענוח.", eligible.map((scene) => scene.id));
+        addCheck(checks, "coverage", "fail", "ASSET_UNAVAILABLE", "נמצאו רשומות קטלוג, אך אין נכסי פיקסלים ציבוריים שניתן להציג או למסור לשירות הפענוח.", eligible.map((scene) => scene.id));
         eligible = [];
       } else {
         addCheck(checks, "coverage", "pass", "ASSET_UNAVAILABLE", `${accessible.length} סצנות כוללות נכסי פיקסלים ציבוריים.`, accessible.map((scene) => scene.id));
@@ -255,6 +263,33 @@ export function assessFeasibility(input: FeasibilityInput): FeasibilityAssessmen
     }
   }
 
+  if (requiresSpecialistModel && !input.catalogSearchSkipped) {
+    const independentSources = new Set(
+      input.scenes.map((scene) => sensorFamily(`${scene.collection} ${scene.platform} ${scene.instrument}`)),
+    );
+    if (input.catalogConfirmed) independentSources.add("external-event-catalog");
+    const count = independentSources.size;
+    if (count < input.mission.validationPolicy.minIndependentSources) {
+      addCheck(
+        checks,
+        "evidence",
+        "warning",
+        "INSUFFICIENT_INDEPENDENT_SOURCES",
+        `מדיניות המשימה דורשת ${input.mission.validationPolicy.minIndependentSources} מקורות בלתי תלויים, ונמצאו ${count}. ממצא מודל אפשרי יישאר מותנה עד אימות נוסף.`,
+        input.scenes.map((scene) => scene.id),
+      );
+    } else {
+      addCheck(
+        checks,
+        "evidence",
+        "pass",
+        "INSUFFICIENT_INDEPENDENT_SOURCES",
+        `נמצאו ${count} מקורות חיישן או קטלוג בלתי תלויים.`,
+        input.scenes.map((scene) => scene.id),
+      );
+    }
+  }
+
   const realModelRun = validRealModelRun(input.model, input.modelObservation);
   if (requiresSpecialistModel) {
     if (!input.model || input.model.status === "not-configured" || input.model.status === "not-applicable") {
@@ -282,7 +317,8 @@ export function assessFeasibility(input: FeasibilityInput): FeasibilityAssessmen
   const hasFailure = checks.some((item) => item.status === "fail");
   const hasWarning = checks.some((item) => item.status === "warning");
   const status: FeasibilityReport["status"] = hasFailure ? "blocked" : hasWarning ? "conditional" : "feasible";
-  const positiveModel = realModelRun
+  const positiveModel = !hasFailure
+    && realModelRun
     && input.modelObservation?.outcome === "positive"
     && isValidGeoJsonGeometry(input.modelObservation.geometry);
   const reliableNegative = status === "feasible"

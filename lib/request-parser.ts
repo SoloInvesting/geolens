@@ -28,6 +28,106 @@ const ENGLISH_MONTHS: Record<string, number> = {
   december: 11,
 };
 
+const HEBREW_NUMBER_WORDS: Record<string, number> = {
+  אחת: 1,
+  אחד: 1,
+  שני: 2,
+  שתי: 2,
+  שנתיים: 2,
+  שלושה: 3,
+  שלוש: 3,
+  שלושת: 3,
+  ארבעה: 4,
+  ארבע: 4,
+  ארבעת: 4,
+  חמישה: 5,
+  חמש: 5,
+  חמשת: 5,
+  שישה: 6,
+  שש: 6,
+  ששת: 6,
+  שבעה: 7,
+  שבע: 7,
+  שבעת: 7,
+  שמונה: 8,
+  שמונת: 8,
+  תשעה: 9,
+  תשע: 9,
+  תשעת: 9,
+  עשרה: 10,
+  עשר: 10,
+  עשרת: 10,
+};
+
+const HEBREW_MONTH_PATTERN = Object.keys(HEBREW_MONTHS).join("|");
+const ENGLISH_MONTH_PATTERN = Object.keys(ENGLISH_MONTHS).join("|");
+const TEMPORAL_WORDS = new Set([
+  ...Object.keys(HEBREW_MONTHS),
+  ...Object.keys(ENGLISH_MONTHS),
+  "היום",
+  "אתמול",
+  "מחר",
+  "שנה",
+  "השנה",
+  "שנים",
+  "שבוע",
+  "השבוע",
+  "שבועיים",
+  "חודש",
+  "החודש",
+  "חודשים",
+  "יום",
+  "ימים",
+  "אחרון",
+  "האחרון",
+  "אחרונה",
+  "האחרונה",
+  "חולף",
+  "החולף",
+  "חולפת",
+  "החולפת",
+  "today",
+  "yesterday",
+  "tomorrow",
+  "year",
+  "years",
+  "month",
+  "months",
+  "week",
+  "weeks",
+  "day",
+  "days",
+  "last",
+  "latest",
+]);
+
+const NON_LOCATION_WORDS = new Set([
+  "בקשה",
+  "בבקשה",
+  "מפה",
+  "תמונה",
+  "תמונות",
+  "לוויין",
+  "לווין",
+  "שריפה",
+  "שריפות",
+  "הצפה",
+  "הצפות",
+  "התפרצות",
+  "התפרצויות",
+  "מבנים",
+  "בניינים",
+  "כלי שיט",
+  "imagery",
+  "image",
+  "images",
+  "satellite",
+  "wildfire",
+  "wildfires",
+  "flood",
+  "floods",
+]);
+
 function toIsoDate(date: Date) {
   return date.toISOString().slice(0, 10);
 }
@@ -38,8 +138,50 @@ function addDays(date: Date, days: number) {
   return next;
 }
 
+function addMonths(date: Date, months: number) {
+  const next = new Date(date);
+  const originalDay = next.getUTCDate();
+  next.setUTCDate(1);
+  next.setUTCMonth(next.getUTCMonth() + months);
+  const lastDay = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0)).getUTCDate();
+  next.setUTCDate(Math.min(originalDay, lastDay));
+  return next;
+}
+
+function addYears(date: Date, years: number) {
+  return addMonths(date, years * 12);
+}
+
+function fullMonth(year: number, month: number, label: string) {
+  const start = new Date(Date.UTC(year, month, 1));
+  const end = new Date(Date.UTC(year, month + 1, 0));
+  return { startDate: toIsoDate(start), endDate: toIsoDate(end), dateLabel: label };
+}
+
+function relativeRange(now: Date, amount: number, unit: "day" | "week" | "month" | "year", label: string) {
+  const safeAmount = Math.min(Math.max(Math.trunc(amount), 1), unit === "year" ? 10 : unit === "month" ? 120 : 3_660);
+  const start = unit === "day"
+    ? addDays(now, -safeAmount)
+    : unit === "week"
+      ? addDays(now, -safeAmount * 7)
+      : unit === "month"
+        ? addMonths(now, -safeAmount)
+        : addYears(now, -safeAmount);
+  return { startDate: toIsoDate(start), endDate: toIsoDate(now), dateLabel: label };
+}
+
+function hebrewAmount(value: string) {
+  const numeric = Number(value.replace(/^ב-?/, ""));
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  return HEBREW_NUMBER_WORDS[value.replace(/^ב/, "")] || null;
+}
+
+function implicitDualAmount(value: string, fallback: number) {
+  return /(?:שבועיים|חודשיים|שנתיים)/.test(value) ? 2 : fallback;
+}
+
 export function parseDateRange(query: string, now = new Date()) {
-  const normalized = query.toLowerCase();
+  const normalized = query.toLowerCase().replace(/[–—]/g, "-");
 
   const iso = normalized.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
   if (iso) {
@@ -47,37 +189,78 @@ export function parseDateRange(query: string, now = new Date()) {
     return { startDate: toIsoDate(addDays(date, -5)), endDate: toIsoDate(addDays(date, 5)), dateLabel: toIsoDate(date) };
   }
 
-  const singularYear = /(?:בשנה|השנה)(?:\s+(?:האחרונה|החולפת))|(?:during\s+the\s+|over\s+the\s+)?last\s+year\b/.test(normalized);
-  if (singularYear) {
-    const start = new Date(now);
-    start.setUTCFullYear(start.getUTCFullYear() - 1);
-    return { startDate: toIsoDate(start), endDate: toIsoDate(now), dateLabel: "השנה האחרונה" };
+  const numericDate = normalized.match(/(?:^|\s)(\d{1,2})[./](\d{1,2})[./](20\d{2})(?:\s|$)/);
+  if (numericDate) {
+    const date = new Date(Date.UTC(Number(numericDate[3]), Number(numericDate[2]) - 1, Number(numericDate[1])));
+    if (date.getUTCDate() === Number(numericDate[1]) && date.getUTCMonth() === Number(numericDate[2]) - 1) {
+      return { startDate: toIsoDate(addDays(date, -5)), endDate: toIsoDate(addDays(date, 5)), dateLabel: toIsoDate(date) };
+    }
   }
 
-  const lastYears = normalized.match(/(?:last|over the last)\s+(\d+)\s+years?/);
-  const hebrewYears = normalized.match(/ב(?:חמש|ארבע|שלוש|שתי|שנתיים|\d+)\s+השנים האחרונות/);
-  if (lastYears || hebrewYears) {
-    const hebrewNumber = hebrewYears?.[0].includes("חמש") ? 5 : hebrewYears?.[0].includes("ארבע") ? 4 : hebrewYears?.[0].includes("שלוש") ? 3 : 2;
-    const years = lastYears ? Number(lastYears[1]) : hebrewNumber;
-    const start = new Date(now);
-    start.setUTCFullYear(start.getUTCFullYear() - Math.min(Math.max(years, 1), 10));
-    return { startDate: toIsoDate(start), endDate: toIsoDate(now), dateLabel: `${years} השנים האחרונות` };
+  if (/(?:היום|today)(?=\s|[,.?!]|$)/u.test(normalized)) {
+    return { startDate: toIsoDate(now), endDate: toIsoDate(now), dateLabel: "היום" };
+  }
+  if (/(?:אתמול|yesterday)(?=\s|[,.?!]|$)/u.test(normalized)) {
+    const date = addDays(now, -1);
+    return { startDate: toIsoDate(date), endDate: toIsoDate(date), dateLabel: "אתמול" };
+  }
+
+  const relativeRules: Array<{
+    pattern: RegExp;
+    unit: "day" | "week" | "month" | "year";
+    defaultAmount: number;
+    label: (amount: number) => string;
+  }> = [
+    {
+      pattern: /(?:ב(?:משך\s+)?|ב-?)?(\d+|אחת|אחד|שני|שתי|שלושה|שלוש|שלושת|ארבעה|ארבע|ארבעת|חמישה|חמש|חמשת|שישה|שש|ששת|שבעה|שבע|שבעת|שמונה|שמונת|תשעה|תשע|תשעת|עשרה|עשר|עשרת)?\s*ה?ימים?\s+(?:האחרונים|האחרונות|האחרון|החולפים|החולפות)|(?:in|over)\s+(?:the\s+)?last\s+(\d+)\s+days?/,
+      unit: "day",
+      defaultAmount: 1,
+      label: (amount) => amount === 1 ? "היום האחרון" : `${amount} הימים האחרונים`,
+    },
+    {
+      pattern: /(?:ב(?:משך\s+)?|ב-?)?(\d+|אחת|אחד|שני|שתי|שלושה|שלוש|שלושת|ארבעה|ארבע|ארבעת|חמישה|חמש|חמשת|שישה|שש|ששת|שבעה|שבע|שבעת|שמונה|שמונת|תשעה|תשע|תשעת|עשרה|עשר|עשרת)?\s*ה?שבוע(?:ות|יים)?\s+(?:האחרונים|האחרונות|האחרון|החולפים|החולפות)|(?:in|over)\s+(?:the\s+)?last\s+(\d+)?\s*weeks?/,
+      unit: "week",
+      defaultAmount: 1,
+      label: (amount) => amount === 1 ? "השבוע האחרון" : `${amount} השבועות האחרונים`,
+    },
+    {
+      pattern: /(?:ב(?:משך\s+)?|ב-?)?(\d+|אחת|אחד|שני|שתי|שלושה|שלוש|שלושת|ארבעה|ארבע|ארבעת|חמישה|חמש|חמשת|שישה|שש|ששת|שבעה|שבע|שבעת|שמונה|שמונת|תשעה|תשע|תשעת|עשרה|עשר|עשרת)?\s*ה?חודש(?:ים|יים)?\s+(?:האחרונים|האחרונות|האחרון|החולפים|החולפות)|(?:in|over)\s+(?:the\s+)?last\s+(\d+)?\s*months?/,
+      unit: "month",
+      defaultAmount: 1,
+      label: (amount) => amount === 1 ? "החודש האחרון" : `${amount} החודשים האחרונים`,
+    },
+    {
+      pattern: /(?:ב(?:משך\s+)?|ב-?)?(\d+|אחת|אחד|שני|שתי|שנתיים|שלושה|שלוש|שלושת|ארבעה|ארבע|ארבעת|חמישה|חמש|חמשת|שישה|שש|ששת|שבעה|שבע|שבעת|שמונה|שמונת|תשעה|תשע|תשעת|עשרה|עשר|עשרת)?\s*ה?שנ(?:ה|ים|תיים)\s+(?:האחרונה|האחרונות|החולפת|החולפות)|(?:during\s+the\s+|in\s+the\s+|over\s+the\s+)?last\s+(\d+)?\s*years?/,
+      unit: "year",
+      defaultAmount: 1,
+      label: (amount) => amount === 1 ? "השנה האחרונה" : `${amount} השנים האחרונות`,
+    },
+  ];
+
+  for (const rule of relativeRules) {
+    const match = normalized.match(rule.pattern);
+    if (!match) continue;
+    const rawAmount = match[1] || match[2] || "";
+    const amount = rawAmount
+      ? hebrewAmount(rawAmount) || Number(rawAmount)
+      : implicitDualAmount(match[0], rule.defaultAmount);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    return relativeRange(now, amount, rule.unit, rule.label(amount));
   }
 
   const monthNames = { ...ENGLISH_MONTHS, ...HEBREW_MONTHS };
   for (const [monthName, month] of Object.entries(monthNames)) {
     const escaped = monthName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const dayMonth = normalized.match(new RegExp(`(?:\\b(\\d{1,2})\\s+(?:ב)?${escaped}|${escaped}\\s+(\\d{1,2}))[,\\s-]*(20\\d{2})`));
+    const dayMonth = normalized.match(new RegExp(`(?:\\b(\\d{1,2})\\s+(?:ב)?${escaped}|(?:ב|מ)?${escaped}\\s+(\\d{1,2}))[,\\s-]*(20\\d{2})`));
     if (dayMonth) {
       const day = Number(dayMonth[1] || dayMonth[2]);
       const date = new Date(Date.UTC(Number(dayMonth[3]), month, day));
-      return { startDate: toIsoDate(addDays(date, -5)), endDate: toIsoDate(addDays(date, 5)), dateLabel: toIsoDate(date) };
+      if (date.getUTCDate() === day && date.getUTCMonth() === month) {
+        return { startDate: toIsoDate(addDays(date, -5)), endDate: toIsoDate(addDays(date, 5)), dateLabel: toIsoDate(date) };
+      }
     }
-    const monthYear = normalized.match(new RegExp(`${escaped}\\s+(20\\d{2})`));
-    if (monthYear) {
-      const date = new Date(Date.UTC(Number(monthYear[1]), month, 15));
-      return { startDate: toIsoDate(addDays(date, -20)), endDate: toIsoDate(addDays(date, 20)), dateLabel: `${monthName} ${monthYear[1]}` };
-    }
+    const monthYear = normalized.match(new RegExp(`(?:ב|מ)?${escaped}\\s+(20\\d{2})`));
+    if (monthYear) return fullMonth(Number(monthYear[1]), month, `${monthName} ${monthYear[1]}`);
   }
 
   const year = normalized.match(/\b(20\d{2})\b/);
@@ -85,7 +268,7 @@ export function parseDateRange(query: string, now = new Date()) {
     return { startDate: `${year[1]}-01-01`, endDate: `${year[1]}-12-31`, dateLabel: year[1] };
   }
 
-  return { startDate: toIsoDate(addDays(now, -45)), endDate: toIsoDate(now), dateLabel: "45 הימים האחרונים" };
+  return relativeRange(now, 45, "day", "45 הימים האחרונים");
 }
 
 const HEBREW_TEMPORAL_STOP = [
@@ -101,22 +284,89 @@ const HEBREW_TEMPORAL_STOP = [
   "בחודש",
   "בימים",
   "במהלך",
-  "בחמש",
-  "בארבע",
-  "בשלוש",
+  "במשך",
   "בשנת",
   "ב-?\\d",
   "20\\d{2}",
+  `(?:ב|מ)?(?:${HEBREW_MONTH_PATTERN})`,
 ].join("|");
 
-export function extractLocationCandidate(query: string) {
-  const english = query.match(/\b(?:in|near|around|at)\s+([A-Za-zÀ-ÿ' .-]+?)(?=\s+(?:on|during|after|before|between|from|over|for|last)\b|[,.?]|$)/i);
-  if (english?.[1]) return english[1].trim();
+const ENGLISH_TEMPORAL_STOP = [
+  "on",
+  "during",
+  "after",
+  "before",
+  "between",
+  "from",
+  "over",
+  "for",
+  "last",
+  "today",
+  "yesterday",
+  `(?:in\\s+)?(?:${ENGLISH_MONTH_PATTERN})`,
+  "20\\d{2}",
+].join("|");
 
-  const explicit = query.match(new RegExp(`(?:^|\\s)(?:באזור|ליד|סביב)\\s+([א-ת׳״'" -]{2,}?)(?=\\s+(?:${HEBREW_TEMPORAL_STOP})|[,.?]|$)`));
-  if (explicit?.[1]) return explicit[1].trim();
+function normalizedWords(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[.,?;:()[\]{}]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  const attached = query.match(new RegExp(`\\sב([א-ת׳״'" -]{2,}?)(?=\\s+(?:${HEBREW_TEMPORAL_STOP})|[,.?]|$)`));
-  if (attached?.[1]) return attached[1].trim();
+export function isPlausibleLocationCandidate(value: string) {
+  const normalized = normalizedWords(value);
+  if (normalized.length < 2 || normalized.length > 100) return false;
+  if (/^[-+]?\d+(?:\.\d+)?$/.test(normalized)) return false;
+  if (/\b20\d{2}\b/.test(normalized)) return false;
+  const words = normalized.split(" ").filter(Boolean);
+  if (!words.length || words.length > 10) return false;
+  const semanticWord = (word: string) => {
+    const withoutHebrewPrefix = /^[במלכה]/.test(word) ? word.slice(1) : word;
+    return TEMPORAL_WORDS.has(word)
+      || TEMPORAL_WORDS.has(withoutHebrewPrefix)
+      || NON_LOCATION_WORDS.has(word)
+      || NON_LOCATION_WORDS.has(withoutHebrewPrefix);
+  };
+  if (words.every(semanticWord)) return false;
+  if (words.some((word) => Object.hasOwn(HEBREW_MONTHS, word) || Object.hasOwn(ENGLISH_MONTHS, word))) return false;
+  return !NON_LOCATION_WORDS.has(normalized);
+}
+
+export function parseCoordinatePair(value: string) {
+  const match = value.match(/(?:^|\s|\()(-?\d{1,3}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)(?:\s|\)|$)/);
+  if (!match) return null;
+  let first = Number(match[1]);
+  let second = Number(match[2]);
+  if (!Number.isFinite(first) || !Number.isFinite(second)) return null;
+  if (Math.abs(first) > 90 && Math.abs(second) <= 90) [first, second] = [second, first];
+  if (Math.abs(first) > 90 || Math.abs(second) > 180) return null;
+  return { latitude: first, longitude: second };
+}
+
+function firstPlausible(matches: Iterable<RegExpMatchArray>) {
+  for (const match of matches) {
+    const candidate = match[1]?.trim() || "";
+    if (isPlausibleLocationCandidate(candidate)) return candidate;
+  }
   return "";
+}
+
+export function extractLocationCandidate(query: string) {
+  const coordinates = parseCoordinatePair(query);
+  if (coordinates) return `${coordinates.latitude}, ${coordinates.longitude}`;
+
+  const englishPattern = new RegExp(`\\b(?:in|near|around|at|of|over)\\s+([A-Za-zÀ-ÿ' .-]+?)(?=\\s+(?:${ENGLISH_TEMPORAL_STOP})\\b|[,.?]|$)`, "gi");
+  const english = firstPlausible(query.matchAll(englishPattern));
+  if (english) return english;
+
+  const explicitPattern = new RegExp(`(?:^|\\s)(?:באזור|ליד|סביב|של|עבור|מעל|בתוך)\\s+([א-ת׳״'" -]{2,}?)(?=\\s+(?:${HEBREW_TEMPORAL_STOP})|[,.?]|$)`, "g");
+  const explicit = firstPlausible(query.matchAll(explicitPattern));
+  if (explicit) return explicit;
+
+  const attachedPattern = new RegExp(`\\sב([א-ת׳״'" -]{2,}?)(?=\\s+(?:${HEBREW_TEMPORAL_STOP})|[,.?]|$)`, "g");
+  return firstPlausible(query.matchAll(attachedPattern));
 }

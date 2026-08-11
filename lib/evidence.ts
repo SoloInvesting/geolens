@@ -118,12 +118,18 @@ export function buildEvidenceLedger(input: {
     },
     {
       id: "claim:detection",
-      statement: input.feasibility.findingStatus === "detected"
+      statement: input.mission.intent === "imagery"
+        ? input.scenes.length
+          ? "נמצאו סצנות דימות מקור מתועדות. לא התבקש ולא בוצע זיהוי אובייקט."
+          : "לא הוכח שקיימת סצנת דימות מתאימה בחלון שנבדק."
+        : input.feasibility.findingStatus === "detected"
         ? "מודל ייעודי החזיר גאומטריית זיהוי תקפה."
         : input.feasibility.findingStatus === "not-detected"
           ? "מודל ייעודי השלים ריצה על קלט מתאים ולא החזיר ממצא."
           : "לא ניתן לקבוע אם היעד קיים מהראיות הזמינות.",
-      status: input.feasibility.findingStatus === "indeterminate" ? "not-established" : "inferred",
+      status: input.mission.intent === "imagery"
+        ? input.scenes.length ? "observed" : "not-established"
+        : input.feasibility.findingStatus === "indeterminate" ? "not-established" : "inferred",
       evidenceIds: input.model.status === "completed" ? [modelEvidenceId, ...sceneEvidenceIds] : sceneEvidenceIds,
     },
   ];
