@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator
@@ -8,8 +9,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Response, status
 from pydantic import ValidationError
 
-from geolens_inference.backends.base import Backend
+from geolens_inference.backends.base import Backend, BackendInputError
 from geolens_inference.backends.mock import MockBackend
+from geolens_inference.backends.open_vocabulary import OpenVocabularyBackend
 from geolens_inference.backends.unavailable import UnavailableBackend
 from geolens_inference.body_limit import RequestBodyLimitMiddleware
 from geolens_inference.capacity import (
@@ -38,10 +40,17 @@ MODEL_INTENTS = {
 }
 
 
-def build_backend(name: str) -> Backend:
+def build_backend(name: str, settings: Settings) -> Backend:
     if name == "mock":
         return MockBackend()
+    if name == "open-vocabulary":
+        return OpenVocabularyBackend(settings)
     return UnavailableBackend(name)
+
+
+def _supported_model_ids(backend: Backend, settings: Settings) -> tuple[str, ...]:
+    declared = getattr(backend, "supported_model_ids", settings.model_ids)
+    return tuple(model_id for model_id in settings.model_ids if model_id in declared)
 
 
 def _validate_headers(
@@ -50,13 +59,14 @@ def _validate_headers(
     contract_header: str | None,
     model_header: str | None,
     settings: Settings,
+    supported_model_ids: tuple[str, ...],
 ) -> None:
     if contract_header != settings.contract_version:
         raise HTTPException(status_code=400, detail=f"X-GeoLens-Contract must equal {settings.contract_version}.")
     if not model_header or model_header != payload.model.id:
         raise HTTPException(status_code=409, detail="X-GeoLens-Model must match model.id.")
-    if payload.model.id not in settings.model_ids:
-        raise HTTPException(status_code=422, detail="Requested model is not on the configured model allowlist.")
+    if payload.model.id not in supported_model_ids:
+        raise HTTPException(status_code=422, detail="Requested model is not supported by the active backend.")
     expected_intent = MODEL_INTENTS.get(payload.model.id)
     if expected_intent is not None and payload.intent != expected_intent:
         raise HTTPException(status_code=422, detail="The requested model is not registered for this intent.")
@@ -64,6 +74,11 @@ def _validate_headers(
 
 def _validate_scene_sources(payload: InferenceRequest, settings: Settings) -> None:
     for scene_index, scene in enumerate(payload.scenes):
+        if scene.asset_access == "requester-pays" and not settings.allow_requester_pays:
+            raise HTTPException(
+                status_code=422,
+                detail="Requester-pays scenes are disabled. Set GEOLENS_ALLOW_REQUESTER_PAYS=true only on a credentialed server.",
+            )
         validate_remote_url(
             scene.stac_url,
             allowed_hosts=settings.stac_hosts,
@@ -116,7 +131,8 @@ def _request_fingerprint(payload: InferenceRequest) -> str:
 
 def create_app(settings: Settings | None = None, backend: Backend | None = None) -> FastAPI:
     service_settings = settings or Settings.from_env()
-    service_backend = backend or build_backend(service_settings.backend_name)
+    service_backend = backend or build_backend(service_settings.backend_name, service_settings)
+    supported_model_ids = _supported_model_ids(service_backend, service_settings)
     if service_settings.bearer_token is not None and not service_settings.bearer_token.strip():
         raise ValueError("GEOLENS_INFERENCE_TOKEN must not be blank.")
     if not isinstance(service_backend, MockBackend) and service_settings.bearer_token is None:
@@ -133,7 +149,15 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        yield
+        load = getattr(service_backend, "load", None)
+        if callable(load):
+            await load()
+        try:
+            yield
+        finally:
+            close = getattr(service_backend, "close", None)
+            if callable(close):
+                await close()
 
     api = FastAPI(
         title="GeoLens Inference Service",
@@ -181,7 +205,7 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
             backend=service_backend.name,
             backendVersion=service_backend.version,
             inferenceEnabled=readiness.inference_enabled,
-            modelIds=list(service_settings.model_ids) if readiness.inference_enabled else [],
+            modelIds=list(supported_model_ids) if readiness.inference_enabled else [],
             detail=readiness.detail,
         )
 
@@ -189,7 +213,7 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
         "/v1/infer",
         response_model=InferenceResponse,
         response_model_by_alias=True,
-        responses={401: {}, 409: {}, 413: {}, 422: {}, 429: {}, 503: {}},
+        responses={401: {}, 409: {}, 413: {}, 422: {}, 429: {}, 503: {}, 504: {}},
     )
     async def infer(
         payload: InferenceRequest,
@@ -205,6 +229,7 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
             contract_header=contract_header,
             model_header=model_header,
             settings=service_settings,
+            supported_model_ids=supported_model_ids,
         )
         if idempotency_key is None:
             raise HTTPException(status_code=400, detail="Idempotency-Key is required for inference requests.")
@@ -218,7 +243,15 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
                 if not readiness.ready:
                     raise HTTPException(status_code=503, detail=readiness.detail)
                 try:
-                    result = InferenceResponse.model_validate(await service_backend.infer(payload))
+                    raw_result = await asyncio.wait_for(
+                        service_backend.infer(payload),
+                        timeout=service_settings.inference_timeout_seconds,
+                    )
+                    result = InferenceResponse.model_validate(raw_result)
+                except BackendInputError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                except asyncio.TimeoutError as exc:
+                    raise HTTPException(status_code=504, detail="Inference execution timed out.") from exc
                 except ValidationError as exc:
                     raise HTTPException(
                         status_code=502,

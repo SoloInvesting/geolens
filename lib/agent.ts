@@ -17,6 +17,7 @@ import { assessFeasibility, type ModelObservation } from "@/lib/feasibility";
 import { tryMeasureGeometry } from "@/lib/gis";
 import { buildEvidenceLedger } from "@/lib/evidence";
 import {
+  extractOpenVocabularyObjects,
   extractLocationCandidate,
   inferIntentFromQuery,
   isPlausibleLocationCandidate,
@@ -231,7 +232,14 @@ function includesAny(query: string, terms: string[]) {
   return terms.some((term) => query.includes(term));
 }
 
-function intentLabel(intent: AnalysisIntent) {
+function intentLabel(intent: AnalysisIntent, objects: string[] = []) {
+  if (intent === "building") {
+    const target = objects.join(" ").toLowerCase();
+    if (/\b(?:vehicle|car|truck|bus)\b/u.test(target)) return "כלי רכב";
+    if (/\baircraft\b/u.test(target)) return "כלי טיס";
+    if (/\broof\b/u.test(target)) return "גגות ומבנים";
+    if (/\bsolar panel\b/u.test(target)) return "פאנלים סולריים";
+  }
   return {
     flood: "הצפה",
     wildfire: "שריפה וצלקת שריפה",
@@ -244,8 +252,8 @@ function intentLabel(intent: AnalysisIntent) {
   }[intent];
 }
 
-function requestedObjects(intent: AnalysisIntent) {
-  return {
+function requestedObjects(intent: AnalysisIntent, query: string) {
+  const defaults = {
     flood: ["מים חדשים", "גבול הצפה", "שטח מוצף"],
     wildfire: ["צלקת שריפה", "מוקד תרמי", "עשן"],
     volcano: ["מוקד התפרצות", "זרימת לבה", "פלומת אפר"],
@@ -255,6 +263,51 @@ function requestedObjects(intent: AnalysisIntent) {
     change: ["אזור שינוי", "סוג שינוי"],
     imagery: ["סצנת מקור", "כיסוי עננים"],
   }[intent];
+  if (intent !== "building") return defaults;
+  const extracted = extractOpenVocabularyObjects(query);
+  return extracted.length ? extracted : defaults;
+}
+
+function objectAwareInterpretation(interpreter: InterpreterResult, query: string): InterpreterResult {
+  if (interpreter.intent !== "building") return interpreter;
+  const extracted = extractOpenVocabularyObjects(query);
+  const objects = extracted.length ? extracted : interpreter.requestedObjects;
+  return {
+    ...interpreter,
+    intentLabel: intentLabel(interpreter.intent, objects),
+    requestedObjects: objects,
+  };
+}
+
+function recipeFor(interpreter: InterpreterResult): AnalysisRecipe {
+  const base = RECIPES[interpreter.intent];
+  if (interpreter.intent !== "building") return base;
+  const target = interpreter.requestedObjects.join(" ").toLowerCase();
+  if (/\b(?:vehicle|car|truck|bus)\b/u.test(target)) {
+    return {
+      ...base,
+      title: "בדיקת היתכנות לזיהוי כלי רכב",
+      target: "כלי הרכב והמאפיינים שהוגדרו בבקשה",
+      expectedOutput: "הצעת מופעי כלי רכב אפשרית רק עם מקור ברזולוציה מתאימה ושירות זיהוי פעיל",
+    };
+  }
+  if (/\baircraft\b/u.test(target)) {
+    return {
+      ...base,
+      title: "בדיקת היתכנות לזיהוי כלי טיס",
+      target: "כלי הטיס והמאפיינים שהוגדרו בבקשה",
+      expectedOutput: "הצעת מופעי כלי טיס אפשרית רק עם מקור ברזולוציה מתאימה ושירות זיהוי פעיל",
+    };
+  }
+  if (/\broof\b/u.test(target)) {
+    return {
+      ...base,
+      title: "בדיקת היתכנות לזיהוי גגות",
+      target: "גגות והמאפיינים החזותיים שהוגדרו בבקשה",
+      expectedOutput: "הצעת פוליגוני גגות אפשרית רק עם מקור ברזולוציה מתאימה ושירות זיהוי פעיל",
+    };
+  }
+  return base;
 }
 
 function outputRequests(query: string) {
@@ -413,14 +466,15 @@ function buildInterpreter(query: string, referenceDate: string): InterpreterResu
   const intent = inferIntentFromQuery(query);
   const dates = parseDateRange(query, new Date(`${referenceDate}T12:00:00Z`));
   const known = findKnownLocation(query);
+  const objects = requestedObjects(intent, query);
   return {
     intent,
-    intentLabel: intentLabel(intent),
+    intentLabel: intentLabel(intent, objects),
     locationText: known?.canonical || extractLocationCandidate(query),
     dateLabel: dates.dateLabel,
     startDate: dates.startDate,
     endDate: dates.endDate,
-    requestedObjects: requestedObjects(intent),
+    requestedObjects: objects,
     requestedOutput: outputRequests(query),
   };
 }
@@ -969,6 +1023,7 @@ function buildSteps(
   geometry: GeoJsonGeometry | null,
   catalogSearchSkipped = false,
 ) {
+  const recipe = recipeFor(interpreter);
   const steps: AgentStep[] = [
     {
       id: "interpret",
@@ -985,7 +1040,7 @@ function buildSteps(
     {
       id: "route",
       label: "בחירת מסלול פענוח",
-      detail: `${RECIPES[interpreter.intent].primarySensor} נבחר כחיישן ראשי. ${RECIPES[interpreter.intent].confirmationSensor} נבחר לאימות.`,
+      detail: `${recipe.primarySensor} נבחר כחיישן ראשי. ${recipe.confirmationSensor} נבחר לאימות.`,
       status: "completed",
     },
     {
@@ -1064,16 +1119,16 @@ export async function analyzeRequest(
       : serverDate;
   const fallbackInterpreter = buildInterpreter(cleanedQuery, referenceDate);
   let plan = await planWithOpenRouter(cleanedQuery, fallbackInterpreter, false, referenceDate);
-  let interpreter = plan.interpretation;
+  let interpreter = objectAwareInterpretation(plan.interpretation, cleanedQuery);
   let brain = plan.brain;
   let location = await resolveLocation(interpreter.locationText, cleanedQuery, plan.alternateLocationText);
   if (!location && brain.provider === "GeoLens" && brain.status === "completed") {
     plan = await planWithOpenRouter(cleanedQuery, fallbackInterpreter, true, referenceDate);
-    interpreter = plan.interpretation;
+    interpreter = objectAwareInterpretation(plan.interpretation, cleanedQuery);
     brain = plan.brain;
     location = await resolveLocation(interpreter.locationText, cleanedQuery, plan.alternateLocationText);
   }
-  const recipe = RECIPES[interpreter.intent];
+  const recipe = recipeFor(interpreter);
 
   if (!location) {
     const generatedAt = new Date().toISOString();

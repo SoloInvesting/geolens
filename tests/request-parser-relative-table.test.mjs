@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  extractOpenVocabularyObjects,
   extractLocationCandidate,
   inferIntentFromQuery,
   parseDateRange,
@@ -55,6 +56,8 @@ const openVocabularyCases = [
   "מצא מטוסים ליד נתבג",
   "מצא מטוס ליד נתבג",
   "אתר רכב בחניון",
+  "מצא גגות אדומים במדריד",
+  "find blue roofs in Madrid",
 ];
 
 test("open-vocabulary object requests use the existing building route", () => {
@@ -63,8 +66,51 @@ test("open-vocabulary object requests use the existing building route", () => {
   }
 });
 
+const extractedObjectCases = [
+  {
+    query: "זהה כלי רכב באזור חיפה",
+    expected: ["vehicle"],
+  },
+  {
+    query: "אתר משאיות כחולות באזור חיפה",
+    expected: ["blue truck"],
+  },
+  {
+    query: "מצא מבנים עם גג אדום במדריד",
+    expected: ["red roof", "building"],
+  },
+  {
+    query: "find blue-roof buildings in Madrid",
+    expected: ["blue roof", "building"],
+  },
+  {
+    query: "find red cars in Madrid",
+    expected: ["red car"],
+  },
+  {
+    query: "מצא גגות אדומים וכחולים במדריד",
+    expected: ["red roof", "blue roof"],
+  },
+  {
+    query: "מצא מכוניות בבית שמש",
+    expected: ["car"],
+  },
+];
+
+test("open-vocabulary targets preserve object classes and colour attributes", async (t) => {
+  for (const item of extractedObjectCases) {
+    await t.test(item.query, () => {
+      assert.deepEqual(extractOpenVocabularyObjects(item.query), item.expected);
+    });
+  }
+});
+
 test("specialist intents retain precedence over generic object words", () => {
   assert.equal(inferIntentFromQuery("map wildfire smoke over cars"), "wildfire");
   assert.equal(inferIntentFromQuery("detect vessels and nearby vehicles"), "vessel");
   assert.equal(inferIntentFromQuery("map flooding around parked vehicles"), "flood");
+});
+
+test("Hebrew word fragments do not create false open-vocabulary targets", () => {
+  assert.deepEqual(extractOpenVocabularyObjects("הצג תמונה של רכבת במדריד"), []);
 });

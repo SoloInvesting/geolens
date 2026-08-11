@@ -21,12 +21,18 @@ function polygon(bbox) {
   };
 }
 
-function stacFeature(collection, date, index) {
+function stacFeature(collection, date, index, requestedBbox = [-3.85, 40.31, -3.52, 40.62], requesterPays = false) {
   const radar = collection.includes("sentinel-1");
   const hls = collection.toLowerCase().includes("hls");
   const landsat = collection.includes("landsat");
-  const bbox = [-3.85, 40.31, -3.52, 40.62];
-  const opticalAssets = hls
+  const naip = collection === "naip";
+  const bbox = requestedBbox;
+  const opticalAssets = naip
+    ? {
+        image: { href: `https://naipeuwest.blob.core.windows.net/naip/v002/mock-${index}.tif` },
+        rendered_preview: { href: `https://planetarycomputer.microsoft.com/api/data/v1/preview-${index}.png` },
+      }
+    : hls
     ? {
         B02: { href: `https://data.lpdaac.earthdatacloud.nasa.gov/hls-${index}-b02.tif` },
         B03: { href: `https://data.lpdaac.earthdatacloud.nasa.gov/hls-${index}-b03.tif` },
@@ -61,10 +67,11 @@ function stacFeature(collection, date, index) {
     geometry: polygon(bbox),
     properties: {
       datetime: `${date}T10:30:00.000Z`,
-      platform: radar ? "sentinel-1a" : hls ? "hls-s30" : landsat ? "landsat-9" : "sentinel-2a",
-      instruments: radar ? ["c-sar"] : ["msi"],
-      gsd: radar ? 10 : landsat || hls ? 30 : 10,
+      platform: radar ? "sentinel-1a" : hls ? "hls-s30" : landsat ? "landsat-9" : naip ? "naip" : "sentinel-2a",
+      instruments: radar ? ["c-sar"] : naip ? ["aerial-camera"] : ["msi"],
+      gsd: naip ? 0.6 : radar ? 10 : landsat || hls ? 30 : 10,
       "eo:cloud_cover": radar ? null : 8,
+      ...(requesterPays ? { "storage:requester_pays": true } : {}),
     },
     assets: radar
       ? {
@@ -84,11 +91,11 @@ function testEnvironment() {
   };
 }
 
-async function analyze(worker, query) {
+async function analyze(worker, query, clientId = "quality-suite") {
   const response = await worker.fetch(
     new Request("http://localhost/api/analyze", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-forwarded-for": clientId },
       body: JSON.stringify({ query, clientDate: "2026-08-10" }),
     }),
     testEnvironment(),
@@ -117,8 +124,8 @@ test("passes deterministic Hebrew location, time, evidence, safety, and cache ga
       return Response.json({
         type: "FeatureCollection",
         features: [
-          stacFeature(collection, "2024-08-08", 1),
-          stacFeature(collection, "2024-08-22", 2),
+          stacFeature(collection, "2024-08-08", 1, body.bbox, url.includes("earth-search.aws.element84.com")),
+          stacFeature(collection, "2024-08-22", 2, body.bbox, url.includes("earth-search.aws.element84.com")),
         ],
       });
     }
@@ -148,6 +155,42 @@ test("passes deterministic Hebrew location, time, evidence, safety, and cache ga
     const repeated = await analyze(worker, "הצג תמונת לוויין של מדריד באוגוסט 2024");
     assert.equal(repeated.mission.missionId, madrid.mission.missionId);
     assert.equal(catalogRequests, requestsAfterFirstRun, "identical analysis should reuse the short-lived catalog cache");
+
+    const objectTargetCases = [
+      {
+        query: "זהה כלי רכב במדריד באוגוסט 2024",
+        requestedObjects: ["vehicle"],
+        intentLabel: "כלי רכב",
+        recipeTitle: /כלי רכב/,
+        targetConcept: "vehicle",
+      },
+      {
+        query: "מצא גגות אדומים במדריד באוגוסט 2024",
+        requestedObjects: ["red roof"],
+        intentLabel: "גגות ומבנים",
+        recipeTitle: /גגות/,
+        targetConcept: "red roof",
+      },
+    ];
+    for (const item of objectTargetCases) {
+      const result = await analyze(worker, item.query);
+      assert.equal(result.interpretation.intent, "building", item.query);
+      assert.deepEqual(result.interpretation.requestedObjects, item.requestedObjects, item.query);
+      assert.equal(result.interpretation.intentLabel, item.intentLabel, item.query);
+      assert.match(result.recipe.title, item.recipeTitle, item.query);
+      assert.equal(result.mission.targetConcept, item.targetConcept, item.query);
+      assert.equal(result.feasibility.realModelRun, false, item.query);
+    }
+
+    const washingtonVehicles = await analyze(worker, "מצא כלי רכב אדומים בוושינגטון באוגוסט 2024", "quality-suite-us-objects");
+    assert.deepEqual(washingtonVehicles.interpretation.requestedObjects, ["red vehicle"]);
+    const planetaryNaip = washingtonVehicles.scenes.find((scene) => scene.catalog === "Microsoft Planetary Computer");
+    assert.ok(planetaryNaip, "US object requests should include Planetary Computer NAIP");
+    assert.equal(planetaryNaip.assetAccess, "public-http");
+    assert.match(planetaryNaip.assets[0].label, /red green blue nir/i);
+    assert.ok(washingtonVehicles.feasibility.eligibleSceneIds.includes(planetaryNaip.id));
+    assert.equal(washingtonVehicles.model.status, "not-configured");
+    assert.equal(washingtonVehicles.detectionGeometry, null);
 
     const wildfire = await analyze(worker, "אתר צלקת שריפה במדריד ב-2024-08-15 והצג פוליגון");
     assert.equal(wildfire.interpretation.intent, "wildfire");

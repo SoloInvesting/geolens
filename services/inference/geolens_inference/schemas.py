@@ -273,8 +273,8 @@ class Scene(StrictModel):
 
     @model_validator(mode="after")
     def validate_asset_access(self) -> "Scene":
-        if self.asset_access != "public-http":
-            raise ValueError("Only public-http scenes may cross the inference boundary.")
+        if self.asset_access not in {"public-http", "requester-pays"}:
+            raise ValueError("Only public-http or explicitly enabled requester-pays scenes may cross the inference boundary.")
         return self
 
 

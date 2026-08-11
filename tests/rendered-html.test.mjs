@@ -41,7 +41,7 @@ test("server-renders the GeoLens product", async () => {
 });
 
 test("keeps the evidence-first agent architecture and model routing visible in source", async () => {
-  const [page, layout, packageJson, agent, modelRouter, openRouter, dataBroker, mission, feasibility, gis, evidence, app, route, styles] = await Promise.all([
+  const [page, layout, packageJson, agent, modelRouter, openRouter, dataBroker, mission, feasibility, gis, evidence, app, map, route, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -54,6 +54,7 @@ test("keeps the evidence-first agent architecture and model routing visible in s
     readFile(new URL("../lib/gis.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/evidence.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/components/GeoAgentApp.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/GeoMap.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/analyze/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
@@ -76,6 +77,8 @@ test("keeps the evidence-first agent architecture and model routing visible in s
   assert.match(modelRouter, /grounding-dino-sam2-eo/);
   assert.match(modelRouter, /xview3-vessel-s1/);
   assert.match(dataBroker, /earth-search\.aws\.element84\.com/);
+  assert.match(dataBroker, /planetarycomputer\.microsoft\.com\/api\/stac\/v1\/search/);
+  assert.match(dataBroker, /anonymous-transient-sas/);
   assert.match(dataBroker, /cmr\.earthdata\.nasa\.gov\/stac\/LPCLOUD/);
   assert.match(dataBroker, /landsat-c2-l2/);
   assert.match(dataBroker, /sentinel-2-c1-l2a/);
@@ -90,6 +93,9 @@ test("keeps the evidence-first agent architecture and model routing visible in s
   assert.match(app, /AssistantTextMessage/);
   assert.match(app, /SatelliteCanvas/);
   assert.match(app, /setCanvasMode/);
+  assert.match(map, /analysis\.feasibility\.realModelRun/);
+  assert.match(map, /analysis\.model\.status === "completed"/);
+  assert.match(map, /detectionPalette/);
   assert.doesNotMatch(app, /result-brief|MissionSpec מאומת|תהליך הפענוח|מתכון פענוח/);
   assert.match(styles, /\.geo-app,[\s\S]*?\.canvas-shell/);
   assert.match(styles, /\.geo-app \{[\s\S]*?width:\s*100vw;[\s\S]*?height:\s*100dvh;/);

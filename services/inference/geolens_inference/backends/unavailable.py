@@ -11,6 +11,12 @@ class UnavailableBackend:
     def __init__(self, name: str) -> None:
         self.name = name
 
+    async def load(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
     def readiness(self) -> BackendReadiness:
         return BackendReadiness(
             ready=False,

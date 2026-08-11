@@ -1,0 +1,10 @@
+-r requirements.txt
+accelerate>=1.2,<2
+numpy>=2.0,<3
+opencv-python-headless>=4.10,<5
+pillow>=11,<13
+planetary-computer>=1.0,<2
+rasterio>=1.4,<2
+safetensors>=0.5,<1
+torch>=2.5,<3
+transformers>=4.56,<6

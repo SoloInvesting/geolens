@@ -164,7 +164,127 @@ const NON_LOCATION_WORDS = new Set([
   "solar",
   "panel",
   "panels",
+  "גג",
+  "גגות",
+  "roof",
+  "roofs",
+  "אדום",
+  "אדומה",
+  "אדומים",
+  "אדומות",
+  "כחול",
+  "כחולה",
+  "כחולים",
+  "כחולות",
+  "ירוק",
+  "ירוקה",
+  "ירוקים",
+  "ירוקות",
+  "לבן",
+  "לבנה",
+  "לבנים",
+  "לבנות",
+  "שחור",
+  "שחורה",
+  "שחורים",
+  "שחורות",
+  "צהוב",
+  "צהובה",
+  "צהובים",
+  "צהובות",
+  "כתום",
+  "כתומה",
+  "כתומים",
+  "כתומות",
+  "אפור",
+  "אפורה",
+  "אפורים",
+  "אפורות",
+  "חום",
+  "חומה",
+  "חומים",
+  "חומות",
+  "סגול",
+  "סגולה",
+  "סגולים",
+  "סגולות",
+  "red",
+  "blue",
+  "green",
+  "white",
+  "black",
+  "yellow",
+  "orange",
+  "gray",
+  "grey",
+  "brown",
+  "purple",
 ]);
+
+type OpenVocabularyTerm = {
+  label: string;
+  pattern: RegExp;
+};
+
+const OPEN_VOCABULARY_OBJECT_TERMS: OpenVocabularyTerm[] = [
+  {
+    label: "solar panel",
+    pattern: /(?<![א-ת])(?:ו?ה?)(?:פאנל(?:ים)?\s+סולרי(?:ים)?|לוחות?\s+(?:סולרי(?:ים)?|פוטו-?וולטאיים))(?![א-ת])|\b(?:solar\s+panels?|photovoltaic\s+panels?|pv\s+arrays?)\b/iu,
+  },
+  { label: "vehicle", pattern: /(?<![א-ת])(?:ו?ה?)(?:כלי\s+רכב|רכב(?:ים)?)(?![א-ת])|\bvehicles?\b/iu },
+  { label: "car", pattern: /(?<![א-ת])(?:ו?ה?)(?:מכונית|מכוניות)(?![א-ת])|\bcars?\b/iu },
+  { label: "truck", pattern: /(?<![א-ת])(?:ו?ה?)(?:משאית|משאיות)(?![א-ת])|\btrucks?\b/iu },
+  { label: "bus", pattern: /(?<![א-ת])(?:ו?ה?)(?:אוטובוס|אוטובוסים)(?![א-ת])|\bbuses?\b/iu },
+  { label: "aircraft", pattern: /(?<![א-ת])(?:ו?ה?)(?:מטוס(?:ים)?|כלי\s+טיס)(?![א-ת])|\b(?:aircraft|airplanes?|helicopters?)\b/iu },
+  { label: "roof", pattern: /(?<![א-ת])(?:ו?ה?)(?:גג|גגות)(?![א-ת])|\broofs?\b/iu },
+  { label: "building", pattern: /(?<![א-ת])(?:ו?ה?)(?:בניין|בניינים|מבנה|מבנים)(?![א-ת])|\b(?:buildings?|structures?)\b/iu },
+];
+
+const OPEN_VOCABULARY_COLOR_TERMS: OpenVocabularyTerm[] = [
+  { label: "red", pattern: /(?<![א-ת])(?:ו?ה?)(?:אדום|אדומה|אדומים|אדומות)(?![א-ת])|\bred\b/iu },
+  { label: "blue", pattern: /(?<![א-ת])(?:ו?ה?)(?:כחול|כחולה|כחולים|כחולות)(?![א-ת])|\bblue\b/iu },
+  { label: "green", pattern: /(?<![א-ת])(?:ו?ה?)(?:ירוק|ירוקה|ירוקים|ירוקות)(?![א-ת])|\bgreen\b/iu },
+  { label: "white", pattern: /(?<![א-ת])(?:ו?ה?)(?:לבן|לבנה|לבנים|לבנות)(?![א-ת])|\bwhite\b/iu },
+  { label: "black", pattern: /(?<![א-ת])(?:ו?ה?)(?:שחור|שחורה|שחורים|שחורות)(?![א-ת])|\bblack\b/iu },
+  { label: "yellow", pattern: /(?<![א-ת])(?:ו?ה?)(?:צהוב|צהובה|צהובים|צהובות)(?![א-ת])|\byellow\b/iu },
+  { label: "orange", pattern: /(?<![א-ת])(?:ו?ה?)(?:כתום|כתומה|כתומים|כתומות)(?![א-ת])|\borange\b/iu },
+  { label: "gray", pattern: /(?<![א-ת])(?:ו?ה?)(?:אפור|אפורה|אפורים|אפורות)(?![א-ת])|\bgr[ae]y\b/iu },
+  { label: "brown", pattern: /(?<![א-ת])(?:ו?ה?)(?:חום|חומה|חומים|חומות)(?![א-ת])|\bbrown\b/iu },
+  { label: "purple", pattern: /(?<![א-ת])(?:ו?ה?)(?:סגול|סגולה|סגולים|סגולות)(?![א-ת])|\bpurple\b/iu },
+];
+
+function matchingTerms(query: string, terms: OpenVocabularyTerm[]) {
+  return terms
+    .map((term) => ({ ...term, index: query.search(term.pattern) }))
+    .filter((term) => term.index >= 0)
+    .sort((left, right) => left.index - right.index)
+    .map((term) => term.label)
+    .filter((label, index, labels) => labels.indexOf(label) === index);
+}
+
+/**
+ * Extracts deterministic, English prompts for the open-vocabulary vision
+ * backend. A colour is attached only when its target is unambiguous. When a
+ * request names several target types, colours remain explicit attributes
+ * rather than being assigned to the wrong object.
+ */
+export function extractOpenVocabularyObjects(query: string) {
+  const normalized = query.toLowerCase();
+  const objects = matchingTerms(normalized, OPEN_VOCABULARY_OBJECT_TERMS);
+  if (!objects.length) return [];
+
+  const colors = matchingTerms(normalized, OPEN_VOCABULARY_COLOR_TERMS);
+  if (!colors.length) return objects;
+
+  if (objects.includes("roof")) {
+    return [
+      ...colors.map((color) => `${color} roof`),
+      ...objects.filter((object) => object !== "roof"),
+    ];
+  }
+  if (objects.length === 1) return colors.map((color) => `${color} ${objects[0]}`);
+  return [...objects, ...colors.map((color) => `color: ${color}`)];
+}
 
 const LEADING_QUERY_WORDS = new Set([
   ...NON_LOCATION_WORDS,
@@ -463,7 +583,7 @@ function includesAny(query: string, terms: string[]) {
 }
 
 function includesOpenVocabularyObject(query: string) {
-  return /(?:פאנל(?:ים)?\s+סולרי(?:ים)?|לוחות?\s+(?:סולרי(?:ים)?|פוטו-?וולטאיים)|כלי\s+רכב|רכב(?:ים)?|מכונית|מכוניות|משאית|משאיות|מטוס(?:ים)?|כלי\s+טיס)|\b(?:solar\s+panels?|photovoltaic\s+panels?|pv\s+arrays?|vehicles?|cars?|trucks?|aircraft|airplanes?|helicopters?|buses)\b/u.test(query);
+  return extractOpenVocabularyObjects(query).length > 0;
 }
 
 export function inferIntentFromQuery(query: string) {

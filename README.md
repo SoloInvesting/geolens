@@ -32,6 +32,7 @@ OpenRouter משמש לתכנון שפה בלבד. הוא אינו מחליף א�
 
 - Copernicus Data Space: Sentinel-1 ו-Sentinel-2.
 - Element 84 Earth Search: Sentinel-1, Sentinel-2 Collection 1, Landsat Collection 2 ו-NAIP בארצות הברית.
+- Microsoft Planetary Computer: NAIP ברזולוציה של 0.3 עד 1 מטר בארצות הברית, עם חתימת SAS אנונימית וזמנית שנוצרת רק בתוך שירות הפענוח.
 - NASA CMR STAC: גילוי HLS S30/L30.
 - NASA EONET: ראיית הקשר לאירועים, לא מסכת זיהוי.
 
@@ -42,7 +43,7 @@ OpenRouter משמש לתכנון שפה בלבד. הוא אינו מחליף א�
 1. הסוכן מחלץ יעד, מקום, זמן ואובייקט מהבקשה.
 2. מיקום מאומת הופך ל-AOI קנוני. מודל השפה אינו רשאי להמציא קואורדינטות.
 3. נוצר `MissionSpec` עם מזהה hash יציב, חיישנים, ערוצים, רזולוציה ותוצרים.
-4. ה-Data Broker מחפש במקביל ב-CDSE, Earth Search ו-NASA CMR ומסיר כפילויות.
+4. ה-Data Broker מחפש במקביל ב-CDSE, Earth Search, Planetary Computer ו-NASA CMR ומסיר כפילויות.
 5. שער ההיתכנות בודק חיישן, ערוצים, גישת פיקסלים, מספר סצנות, עננות, זמן ורזולוציה.
 6. מנגנון הניתוב בוחר שירות מודל ייעודי.
 7. GeoLens מאמת את ה-GeoJSON ומחשב שטח, היקף, מרכז ו-bbox ללא LLM.

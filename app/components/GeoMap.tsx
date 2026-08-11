@@ -9,6 +9,41 @@ type GeoMapProps = {
   preferredSceneId?: string | null;
 };
 
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function detectionPalette(properties: Record<string, unknown>) {
+  const target = [properties.class, properties.label, properties.object, properties.category]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+  if (/vehicle|car|truck|bus|רכב|מכונית|משאית/.test(target)) return "#38bdf8";
+  if (/roof|building|structure|גג|מבנה|בניין/.test(target)) return "#f97316";
+  if (/flood|water|הצפ|מים/.test(target)) return "#22d3ee";
+  if (/burn|fire|wildfire|שריפ/.test(target)) return "#fb7185";
+  if (/volcan|lava|געש|לבה/.test(target)) return "#f59e0b";
+  return "#d946ef";
+}
+
+function detectionLabel(properties: Record<string, unknown>) {
+  for (const value of [properties.label, properties.class, properties.object, properties.category]) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "איתור מודל";
+}
+
+function detectionScore(properties: Record<string, unknown>) {
+  for (const value of [properties.confidence, properties.score, properties.probability]) {
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    const normalized = value <= 1 ? value * 100 : value;
+    return Math.max(0, Math.min(100, normalized));
+  }
+  return null;
+}
+
 export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<import("leaflet").Map | null>(null);
@@ -192,34 +227,73 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
           marker.bindTooltip(tooltip).bindPopup(popup).addTo(evidenceLayer);
         }
 
-        if (analysis.detectionGeometry) {
-          const detectionLayer = L.geoJSON(analysis.detectionGeometry as Parameters<typeof L.geoJSON>[0], {
-            style: {
-              color: "#ff3b5c",
-              weight: 3,
-              fillColor: "#ff3b5c",
-              fillOpacity: 0.22,
+        const verifiedDetection = analysis.findingStatus === "detected"
+          && analysis.feasibility.realModelRun
+          && analysis.model.status === "completed"
+          && analysis.detectionGeometry;
+        if (verifiedDetection) {
+          const detectionLayer = L.geoJSON(verifiedDetection as Parameters<typeof L.geoJSON>[0], {
+            style: (feature) => {
+              const color = detectionPalette(recordValue(feature?.properties));
+              return {
+                color,
+                weight: 3,
+                fillColor: color,
+                fillOpacity: 0.24,
+              };
             },
-            pointToLayer: (_, latlng) =>
-              L.circleMarker(latlng, {
+            pointToLayer: (feature, latlng) => {
+              const color = detectionPalette(recordValue(feature?.properties));
+              return L.circleMarker(latlng, {
                 radius: 8,
                 color: "#ffffff",
                 weight: 2,
-                fillColor: "#ff3b5c",
+                fillColor: color,
                 fillOpacity: 1,
-              }),
+              });
+            },
+            onEachFeature: (feature, layer) => {
+              const properties = recordValue(feature.properties);
+              const label = detectionLabel(properties);
+              const score = detectionScore(properties);
+              const requestedColor = typeof properties.requestedColor === "string"
+                ? properties.requestedColor
+                : typeof properties.color === "string"
+                  ? properties.color
+                  : null;
+              const sceneId = typeof properties.sceneId === "string" ? properties.sceneId : null;
+              const popup = document.createElement("div");
+              popup.dir = "rtl";
+              const title = document.createElement("strong");
+              title.textContent = label;
+              popup.appendChild(title);
+              const details = [
+                score === null ? null : `ציון מודל ${score.toFixed(1)}%`,
+                requestedColor ? `צבע מבוקש: ${requestedColor}` : null,
+                sceneId ? `סצנת מקור: ${sceneId}` : null,
+                analysis.model.runId ? `ריצה: ${analysis.model.runId}` : null,
+              ].filter((value): value is string => Boolean(value));
+              if (details.length) {
+                popup.appendChild(document.createElement("br"));
+                popup.appendChild(document.createTextNode(details.join(" · ")));
+              }
+              layer.bindTooltip(label).bindPopup(popup);
+            },
           });
-          const detectionPopup = document.createElement("div");
-          detectionPopup.dir = "rtl";
-          detectionPopup.textContent = analysis.measurements?.areaKm2 === null || !analysis.measurements
-            ? `תוצאת ${analysis.model.name}${analysis.model.runId ? ` · ריצה ${analysis.model.runId}` : ""}`
-            : `תוצאת ${analysis.model.name} · שטח ${analysis.measurements.areaKm2.toLocaleString("he-IL")} קמ״ר${analysis.model.runId ? ` · ריצה ${analysis.model.runId}` : ""}`;
-          detectionLayer.bindTooltip("תוצאת מודל").bindPopup(detectionPopup).addTo(evidenceLayer);
+          if (verifiedDetection.type !== "FeatureCollection") {
+            const detectionPopup = document.createElement("div");
+            detectionPopup.dir = "rtl";
+            detectionPopup.textContent = analysis.measurements?.areaKm2 === null || !analysis.measurements
+              ? `תוצאת ${analysis.model.name}${analysis.model.runId ? ` · ריצה ${analysis.model.runId}` : ""}`
+              : `תוצאת ${analysis.model.name} · שטח ${analysis.measurements.areaKm2.toLocaleString("he-IL")} קמ״ר${analysis.model.runId ? ` · ריצה ${analysis.model.runId}` : ""}`;
+            detectionLayer.bindTooltip("תוצאת מודל מאומתת").bindPopup(detectionPopup);
+          }
+          detectionLayer.addTo(evidenceLayer);
           const detectedBounds = detectionLayer.getBounds();
-          if (detectedBounds.isValid()) map.fitBounds(detectedBounds.pad(0.15), { maxZoom: 14 });
+          if (detectedBounds.isValid()) map.fitBounds(detectedBounds.pad(0.15), { maxZoom: 18 });
         }
 
-        if (!analysis.detectionGeometry) map.fitBounds(analysisBounds.pad(0.08), { maxZoom: 11 });
+        if (!verifiedDetection) map.fitBounds(analysisBounds.pad(0.08), { maxZoom: 11 });
       }
 
       resizeTimer = window.setTimeout(() => map.invalidateSize(), 50);

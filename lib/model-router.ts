@@ -135,7 +135,7 @@ const MODEL_REGISTRY: ModelSpec[] = [
   },
   {
     id: "grounding-dino-sam2-eo",
-    version: "proposal-pipeline/v1",
+    version: "grounding-dino-tiny+sam2.1-hiera-small/v1",
     name: "Grounding DINO + SAM 2.1 EO",
     task: "הצעת אובייקטים פתוחה לפי טקסט וסגמנטציית מופעים",
     provider: "GeoLens Open Vocabulary service",

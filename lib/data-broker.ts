@@ -1,7 +1,11 @@
 import type { AnalysisIntent, GeoJsonGeometry, LicenseProvenance, SceneResult } from "@/app/types";
 
 type Bbox = [number, number, number, number];
-type CatalogId = "copernicus-cdse" | "element84-earth-search" | "nasa-cmr-hls";
+type CatalogId =
+  | "copernicus-cdse"
+  | "element84-earth-search"
+  | "microsoft-planetary-computer"
+  | "nasa-cmr-hls";
 type SceneFamily = "sentinel-1" | "sentinel-2" | "landsat" | "naip" | "hls" | "unknown";
 
 type StacFeature = {
@@ -33,7 +37,7 @@ export type SceneProvenance = {
   sourceCollection: string;
   sourceItemId: string;
   itemUrl: string;
-  accessPolicy: "public-metadata-no-auth";
+  accessPolicy: "public-metadata-no-auth" | "anonymous-transient-sas";
   requesterPays: boolean;
   fetchedAt: string;
 };
@@ -81,6 +85,11 @@ const CATALOGS = {
     label: "Element 84 Earth Search",
     endpoint: "https://earth-search.aws.element84.com/v1/search",
   },
+  planetaryComputer: {
+    id: "microsoft-planetary-computer" as const,
+    label: "Microsoft Planetary Computer",
+    endpoint: "https://planetarycomputer.microsoft.com/api/stac/v1/search",
+  },
   hls: {
     id: "nasa-cmr-hls" as const,
     label: "NASA CMR STAC, HLS",
@@ -122,7 +131,7 @@ const ASSET_SPECS: Record<Exclude<SceneFamily, "unknown">, Array<{ keys: string[
     { keys: ["swir22", "SR_B7"], label: "B07 SWIR2" },
   ],
   naip: [
-    { keys: ["image", "analytic", "data"], label: "NAIP RGB-NIR COG" },
+    { keys: ["image", "analytic", "data"], label: "NAIP RGB-NIR COG (red green blue nir)" },
   ],
   hls: [
     { keys: ["B02"], label: "B02 Blue" },
@@ -188,6 +197,7 @@ function isObjectRequest(input: SatelliteSceneQuery) {
 function catalogPlans(input: SatelliteSceneQuery): CatalogPlan[] {
   const cdseCollections = new Set<string>();
   const earthCollections = new Set<string>();
+  const planetaryComputerCollections = new Set<string>();
   const hlsCollections = new Set<string>();
 
   const addSentinel1 = () => {
@@ -214,7 +224,10 @@ function catalogPlans(input: SatelliteSceneQuery): CatalogPlan[] {
     addSentinel1();
   } else if (input.intent === "building") {
     addSentinel2();
-    if (isInsideUsCoverage(input.bbox) && isObjectRequest(input)) earthCollections.add("naip");
+    if (isInsideUsCoverage(input.bbox) && isObjectRequest(input)) {
+      earthCollections.add("naip");
+      planetaryComputerCollections.add("naip");
+    }
   } else if (input.intent === "volcano") {
     addSentinel1();
     addSentinel2();
@@ -224,7 +237,10 @@ function catalogPlans(input: SatelliteSceneQuery): CatalogPlan[] {
     addSentinel1();
     addSentinel2();
     addLandsat();
-    if (isInsideUsCoverage(input.bbox) && isObjectRequest(input)) earthCollections.add("naip");
+    if (isInsideUsCoverage(input.bbox) && isObjectRequest(input)) {
+      earthCollections.add("naip");
+      planetaryComputerCollections.add("naip");
+    }
   } else {
     addSentinel2();
     addLandsat();
@@ -234,6 +250,7 @@ function catalogPlans(input: SatelliteSceneQuery): CatalogPlan[] {
   return [
     { ...CATALOGS.cdse, collections: [...cdseCollections] },
     { ...CATALOGS.earthSearch, collections: [...earthCollections] },
+    { ...CATALOGS.planetaryComputer, collections: [...planetaryComputerCollections] },
     { ...CATALOGS.hls, collections: [...hlsCollections] },
   ];
 }
@@ -321,12 +338,14 @@ function desiredAssets(family: SceneFamily, assets: Record<string, unknown>) {
 
 function assetAccess(
   family: SceneFamily,
+  catalogId: CatalogId,
   assets: Record<string, unknown>,
   publicAssetCount: number,
   requesterPays: boolean,
 ): SceneResult["assetAccess"] {
   if (family === "hls") return "authentication-required";
   if (requesterPays) return "requester-pays";
+  if (catalogId === "microsoft-planetary-computer" && publicAssetCount > 0) return "public-http";
   if (publicAssetCount > 0) return "public-http";
   if (family !== "unknown") {
     const hasS3OnlySource = ASSET_SPECS[family].some((spec) => spec.keys.some((key) => {
@@ -478,7 +497,11 @@ function scoreScene(
   const resolutionTarget = targetResolution(input.intent);
   const resolution = scene.gsdMeters === null ? 0.35 : clamp(resolutionTarget / scene.gsdMeters);
   const sensor = sensorPreference(input.intent, scene.family);
-  const catalogReliability = scene.catalogId === "copernicus-cdse" && scene.family.startsWith("sentinel") ? 1 : 0.96;
+  const catalogReliability = (
+    scene.catalogId === "copernicus-cdse" && scene.family.startsWith("sentinel")
+  ) || (
+    scene.catalogId === "microsoft-planetary-computer" && scene.family === "naip"
+  ) ? 1 : 0.96;
   const weighted = input.intent === "building"
     ? temporal.score * 0.15 + cloud * 0.1 + resolution * 0.35
       + scene.assetCompleteness * 0.15 + sensor * 0.23 + catalogReliability * 0.02
@@ -502,7 +525,9 @@ function scoreScene(
       : scene.assetAccess === "authentication-required"
         ? "מטא-דאטה ו-thumbnail ציבוריים, ערוצי HLS דורשים Earthdata Login"
       : scene.assetAccess === "public-http"
-        ? "נכס נתונים ציבורי ב-HTTPS"
+        ? scene.catalogId === "microsoft-planetary-computer"
+          ? "נכס ציבורי הנחתם ב-SAS אנונימי בזמן הפענוח"
+          : "נכס נתונים ציבורי ב-HTTPS"
         : "רק מטא-דאטה ציבורי זמין",
   ];
   return { qualityScore, selectionReason: details.join(", ") };
@@ -585,7 +610,7 @@ function normalizeFeature(
     role: "context",
     catalog: plan.label,
     canonicalSceneId: canonicalSceneId(family, id, datetime),
-    assetAccess: assetAccess(family, assets, selectedAssets.length, requesterPays),
+    assetAccess: assetAccess(family, plan.id, assets, selectedAssets.length, requesterPays),
     catalogId: plan.id,
     catalogLabel: plan.label,
     family,
@@ -601,7 +626,9 @@ function normalizeFeature(
       sourceCollection: collection,
       sourceItemId: id,
       itemUrl,
-      accessPolicy: "public-metadata-no-auth",
+      accessPolicy: plan.id === "microsoft-planetary-computer"
+        ? "anonymous-transient-sas"
+        : "public-metadata-no-auth",
       requesterPays,
       fetchedAt,
     },

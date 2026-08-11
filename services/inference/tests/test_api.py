@@ -204,6 +204,15 @@ def test_non_public_scene_assets_cannot_cross_boundary() -> None:
     assert response.status_code == 422
 
 
+def test_requester_pays_requires_explicit_server_opt_in() -> None:
+    payload = sample_payload()
+    payload["scenes"][0]["assetAccess"] = "requester-pays"
+    with TestClient(create_app(Settings(allow_requester_pays=True))) as client:
+        response = client.post("/v1/infer", json=payload, headers=headers())
+
+    assert response.status_code == 200
+
+
 def test_payload_is_strict_and_rejects_unknown_fields() -> None:
     payload = sample_payload()
     payload["pretendDetected"] = True
@@ -383,6 +392,23 @@ class BlockingMockBackend(MockBackend):
         self.started.set()
         await self.release.wait()
         return await super().infer(request)
+
+
+class SlowMockBackend(MockBackend):
+    name = "slow-mock"
+
+    async def infer(self, request):
+        await asyncio.sleep(0.1)
+        return await super().infer(request)
+
+
+def test_backend_execution_timeout_returns_504() -> None:
+    backend = SlowMockBackend()
+    settings = Settings(backend_name=backend.name, inference_timeout_seconds=0.01)
+    with TestClient(create_app(settings, backend=backend)) as client:
+        response = client.post("/v1/infer", json=sample_payload(), headers=headers())
+
+    assert response.status_code == 504
 
 
 def test_full_inference_capacity_returns_429_without_running_another_request() -> None:

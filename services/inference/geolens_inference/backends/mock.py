@@ -20,6 +20,12 @@ class MockBackend:
     name = "mock"
     version = "validation-only/v1"
 
+    async def load(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
     def readiness(self) -> BackendReadiness:
         return BackendReadiness(
             ready=True,
