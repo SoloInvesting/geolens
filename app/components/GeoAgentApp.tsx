@@ -11,6 +11,8 @@ type ConversationItem =
   | { id: string; role: "assistant"; result: AnalysisResponse }
   | { id: string; role: "error"; text: string };
 
+type CanvasMode = "map" | "satellite";
+
 const EXAMPLES = [
   "האם היו הצפות בצפון-מערב ניו אורלינס ב-15 באוגוסט 2023? הצג תמונות מקור ופוליגון אם זוהה.",
   "מפה את צלקת השריפה סביב לחאינה לאחר השריפה באוגוסט 2023 והסבר באיזה חיישן השתמשת.",
@@ -243,6 +245,70 @@ function SceneComparison({ scenes }: { scenes: SceneResult[] }) {
   );
 }
 
+function SatelliteCanvas({
+  analysis,
+  scenes,
+  selectedSceneId,
+  onSelectScene,
+  onSceneError,
+}: {
+  analysis: AnalysisResponse | null;
+  scenes: SceneResult[];
+  selectedSceneId: string | null;
+  onSelectScene: (sceneId: string) => void;
+  onSceneError: (sceneId: string) => void;
+}) {
+  const selected = scenes.find((scene) => scene.id === selectedSceneId)
+    || scenes.find((scene) => scene.role === "primary")
+    || scenes[0];
+  const previewUrl = displayPreviewUrl(selected?.thumbnailUrl || null);
+
+  if (!analysis || !selected || !previewUrl) {
+    return (
+      <div className="satellite-empty">
+        <span className="eyebrow">תמונת מקור</span>
+        <strong>אין תצלום לוויין ציבורי להצגה</strong>
+        <p>אפשר להמשיך לעבוד במפה ולבחור בקשה אחרת עם Quicklook זמין.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="satellite-canvas" aria-label="תצלום הלוויין שנבחר">
+      <Image
+        src={previewUrl}
+        alt={`תצלום מקור ${selected.instrument} מתאריך ${selected.datetime}`}
+        fill
+        unoptimized
+        className="satellite-primary"
+        sizes="(max-width: 980px) 100vw, 75vw"
+        onError={() => onSceneError(selected.id)}
+      />
+      <div className="satellite-meta">
+        <span>{sourceRole(selected)}</span>
+        <strong>{selected.instrument}</strong>
+        <small>{new Date(selected.datetime).toLocaleDateString("he-IL")} · {selected.resolution} · {selected.catalog}</small>
+      </div>
+      <div className="scene-switcher" role="group" aria-label="בחירת סצנת מקור">
+        {scenes.map((scene, index) => (
+          <button
+            key={scene.id}
+            type="button"
+            className={scene.id === selected.id ? "is-selected" : ""}
+            onClick={() => onSelectScene(scene.id)}
+            aria-pressed={scene.id === selected.id}
+            aria-label={`הצג סצנה ${index + 1}, ${scene.instrument}, ${new Date(scene.datetime).toLocaleDateString("he-IL")}`}
+          >
+            <span>{String(index + 1).padStart(2, "0")}</span>
+            <strong>{new Date(scene.datetime).toLocaleDateString("he-IL")}</strong>
+          </button>
+        ))}
+      </div>
+      <p className="satellite-disclaimer">Quicklook של סצנת המקור, לא תחליף ל-COG מתויל או לפענוח פיקסלים.</p>
+    </div>
+  );
+}
+
 function geometryFeatureCollection(geometry: GeoJsonGeometry | null, result: AnalysisResponse) {
   if (!geometry) return { type: "FeatureCollection", features: [] };
   if (geometry.type === "FeatureCollection") return geometry;
@@ -295,7 +361,19 @@ function localCalendarDate() {
   return `${year}-${month}-${day}`;
 }
 
-function ResultMessage({ result }: { result: AnalysisResponse }) {
+function ResultMessage({
+  result,
+  onActivate,
+  isActive,
+  showDetails,
+  onToggleDetails,
+}: {
+  result: AnalysisResponse;
+  onActivate: () => void;
+  isActive: boolean;
+  showDetails: boolean;
+  onToggleDetails: () => void;
+}) {
   return (
     <div className="assistant-message">
       <div className="assistant-mark">G</div>
@@ -305,9 +383,40 @@ function ResultMessage({ result }: { result: AnalysisResponse }) {
           <span className="timestamp">{new Date(result.generatedAt).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}</span>
         </div>
         <h2>{result.recipe.title}</h2>
-        <p className="answer-copy">{result.answer}</p>
+        <p className={`answer-copy${showDetails ? "" : " is-clamped"}`}>{result.answer}</p>
+
+        <section className="result-brief" aria-label="סיכום הניתוח">
+          <div>
+            <span>מסקנה</span>
+            <strong>{findingLabel(result)}</strong>
+          </div>
+          <div>
+            <span>חיישן</span>
+            <strong>{result.recipe.primarySensor}</strong>
+          </div>
+          <div>
+            <span>מקורות</span>
+            <strong>{result.scenes.length}</strong>
+          </div>
+        </section>
 
         {result.clarification && <div className="clarification">{result.clarification}</div>}
+
+        {!showDetails && result.limitations[0] && (
+          <p className="inline-limitation">{result.limitations[0]}</p>
+        )}
+
+        <div className="result-actions">
+          <button type="button" className="canvas-action" onClick={onActivate} disabled={isActive}>
+            {isActive ? "מוצג בקנבס" : "הצג בקנבס"}
+          </button>
+          <button type="button" className="details-action" onClick={onToggleDetails} aria-expanded={showDetails}>
+            {showDetails ? "סגור דוח" : "פרטי הניתוח והראיות"}
+          </button>
+        </div>
+
+        {showDetails && (
+          <div className="result-details">
 
         <section className="decoder-summary" aria-label="פירוש הבקשה">
           <div>
@@ -508,6 +617,8 @@ function ResultMessage({ result }: { result: AnalysisResponse }) {
             )}
           </div>
         </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -517,6 +628,12 @@ export function GeoAgentApp() {
   const [query, setQuery] = useState("");
   const [conversation, setConversation] = useState<ConversationItem[]>([]);
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
+  const [canvasMode, setCanvasMode] = useState<CanvasMode>("map");
+  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+  const [failedPreviewIds, setFailedPreviewIds] = useState<string[]>([]);
+  const [activeResultId, setActiveResultId] = useState<string | null>(null);
+  const [expandedResultId, setExpandedResultId] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [brainStage, setBrainStage] = useState(0);
   const endRef = useRef<HTMLDivElement>(null);
@@ -532,6 +649,7 @@ export function GeoAgentApp() {
         { id: "saved-user", role: "user", text: saved.query },
         { id: "saved-result", role: "assistant", result: saved },
       ]);
+      setActiveResultId("saved-result");
     });
     return () => {
       cancelled = true;
@@ -545,7 +663,9 @@ export function GeoAgentApp() {
   }, [busy]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    if (window.matchMedia("(min-width: 981px)").matches) {
+      endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   }, [conversation, busy]);
 
   async function submitQuery(rawQuery?: string) {
@@ -554,6 +674,7 @@ export function GeoAgentApp() {
     setQuery("");
     setBusy(true);
     setBrainStage(0);
+    setStatusMessage("הפענוח התחיל.");
     messageSequence.current += 1;
     const userItem: ConversationItem = { id: `user-${messageSequence.current}`, role: "user", text };
     setConversation((items) => [...items, userItem]);
@@ -570,11 +691,18 @@ export function GeoAgentApp() {
       const payload = (await response.json()) as AnalysisResponse | { error: string };
       if (!response.ok || "error" in payload) throw new Error("error" in payload ? payload.error : "הניתוח נכשל");
       setAnalysis(payload);
+      setSelectedSceneId(null);
+      setExpandedResultId(null);
+      if (!payload.scenes.some((scene) => displayPreviewUrl(scene.thumbnailUrl))) setCanvasMode("map");
       window.localStorage.setItem("geolens-last-analysis", JSON.stringify(payload));
       messageSequence.current += 1;
-      setConversation((items) => [...items, { id: `assistant-${messageSequence.current}`, role: "assistant", result: payload }]);
+      const assistantId = `assistant-${messageSequence.current}`;
+      setActiveResultId(assistantId);
+      setStatusMessage("הפענוח הושלם והתוצאה מוצגת בקנבס.");
+      setConversation((items) => [...items, { id: assistantId, role: "assistant", result: payload }]);
     } catch (error) {
       const message = error instanceof Error ? error.message : "הסוכן לא הצליח להשלים את הניתוח.";
+      setStatusMessage(`הפענוח נכשל: ${message}`);
       messageSequence.current += 1;
       setConversation((items) => [...items, { id: `error-${messageSequence.current}`, role: "error", text: message }]);
     } finally {
@@ -594,6 +722,14 @@ export function GeoAgentApp() {
     }
   }
 
+  const previewScenes = analysis?.scenes.filter(
+    (scene) => displayPreviewUrl(scene.thumbnailUrl) && !failedPreviewIds.includes(scene.id),
+  ) || [];
+  const selectedScene = previewScenes.find((scene) => scene.id === selectedSceneId)
+    || previewScenes.find((scene) => scene.role === "primary")
+    || previewScenes[0];
+  const hasSatellitePreview = previewScenes.length > 0;
+
   return (
     <main className="app-shell" dir="rtl">
       <header className="topbar">
@@ -607,52 +743,90 @@ export function GeoAgentApp() {
       </header>
 
       <div className="workspace">
+        <section className="intel-panel" aria-label="קנבס גיאו-מרחבי">
+          <div className="intel-header">
+            <div>
+              <span className="eyebrow">קנבס ראשי</span>
+              <h2>{analysis?.location?.name || "מפת העולם"}</h2>
+            </div>
+            <div className="canvas-controls" role="group" aria-label="בחירת תצוגת קנבס">
+              <button type="button" className={canvasMode === "map" ? "is-active" : ""} onClick={() => setCanvasMode("map")} aria-pressed={canvasMode === "map"}>
+                מפה
+              </button>
+              <button
+                type="button"
+                className={canvasMode === "satellite" ? "is-active" : ""}
+                onClick={() => setCanvasMode("satellite")}
+                aria-pressed={canvasMode === "satellite"}
+                disabled={!hasSatellitePreview}
+              >
+                תצלום לוויין
+              </button>
+            </div>
+          </div>
+          <div className="canvas-stage">
+            <div className={`canvas-view${canvasMode === "map" ? " is-active" : ""}`} aria-hidden={canvasMode !== "map"}>
+              <GeoMap analysis={analysis} preferredSceneId={selectedScene?.id || null} />
+            </div>
+            <div className={`canvas-view${canvasMode === "satellite" ? " is-active" : ""}`} aria-hidden={canvasMode !== "satellite"}>
+              <SatelliteCanvas
+                analysis={analysis}
+                scenes={previewScenes}
+                selectedSceneId={selectedScene?.id || null}
+                onSelectScene={setSelectedSceneId}
+                onSceneError={(sceneId) => {
+                  setFailedPreviewIds((current) => current.includes(sceneId) ? current : [...current, sceneId]);
+                  if (previewScenes.every((scene) => scene.id === sceneId)) setCanvasMode("map");
+                }}
+              />
+            </div>
+          </div>
+        </section>
+
         <section className="conversation-panel" aria-label="שיחה עם סוכן הפענוח">
           <div className="conversation-heading">
             <div>
-              <span className="eyebrow">סוכן פענוח עצמאי</span>
-              <h1>מה תרצה לאתר בכדור הארץ?</h1>
-              <p>כתוב מטרה, מקום וזמן. הסוכן יחליט מה ניתן לזהות, באיזה חיישן ואיך לאמת את התוצאה.</p>
-            </div>
-            <div className="brain-chip">
-              <span className="brain-orbit"><i /></span>
-              Evidence-first
+              <span className="eyebrow">סוכן פענוח</span>
+              <h1>מה תרצה לאתר?</h1>
+              <p>כתוב מטרה, מקום וזמן.</p>
             </div>
           </div>
+          <p className="sr-only" aria-live="polite">
+            {statusMessage}
+          </p>
 
           {conversation.length === 0 && (
             <div className="empty-state">
-              <div className="empty-grid">
-                <div>
-                  <span>01</span>
-                  <strong>מפרש</strong>
-                  <p>מחלץ מקום, זמן, אובייקט ורמת דיוק מבוקשת.</p>
-                </div>
-                <div>
-                  <span>02</span>
-                  <strong>מתכנן</strong>
-                  <p>בוחר חיישן, ערוצים ספקטרליים ותמונת בסיס.</p>
-                </div>
-                <div>
-                  <span>03</span>
-                  <strong>מאמת</strong>
-                  <p>מפריד בין מקור, דיווח קטלוגי ותוצאת מודל.</p>
-                </div>
-              </div>
-              <p className="examples-label">אפשר להתחיל מדוגמה</p>
+              <p className="examples-label">אפשר להתחיל מאחת הבקשות</p>
               <div className="example-list">
-                {EXAMPLES.map((example) => (
+                {EXAMPLES.slice(0, 3).map((example) => (
                   <button key={example} type="button" onClick={() => submitQuery(example)}>{example}</button>
                 ))}
               </div>
             </div>
           )}
 
-          <div className="message-stream" aria-live="polite">
+          <div className="message-stream">
             {conversation.map((item) => {
               if (item.role === "user") return <div className="user-message" key={item.id}>{item.text}</div>;
               if (item.role === "error") return <div className="error-message" key={item.id}>{item.text}</div>;
-              return <ResultMessage key={item.id} result={item.result} />;
+              return (
+                <ResultMessage
+                  key={item.id}
+                  result={item.result}
+                  isActive={activeResultId === item.id}
+                  showDetails={expandedResultId === item.id}
+                  onToggleDetails={() => setExpandedResultId((current) => current === item.id ? null : item.id)}
+                  onActivate={() => {
+                    setAnalysis(item.result);
+                    setActiveResultId(item.id);
+                    setExpandedResultId(null);
+                    setSelectedSceneId(null);
+                    if (!item.result.scenes.some((scene) => displayPreviewUrl(scene.thumbnailUrl))) setCanvasMode("map");
+                    window.localStorage.setItem("geolens-last-analysis", JSON.stringify(item.result));
+                  }}
+                />
+              );
             })}
             {busy && (
               <div className="thinking-card">
@@ -686,18 +860,6 @@ export function GeoAgentApp() {
           </form>
         </section>
 
-        <aside className="intel-panel" aria-label="מפה ופרטי מודיעין">
-          <div className="intel-header">
-            <div>
-              <span className="eyebrow">תמונת מצב</span>
-              <h2>{analysis?.location?.name || "מפה מבצעית"}</h2>
-            </div>
-            <span className="coordinates">
-              {analysis?.location ? `${analysis.location.latitude.toFixed(3)}, ${analysis.location.longitude.toFixed(3)}` : "32.000, 35.000"}
-            </span>
-          </div>
-          <GeoMap analysis={analysis} />
-        </aside>
       </div>
     </main>
   );

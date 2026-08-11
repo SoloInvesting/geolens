@@ -31,15 +31,17 @@ test("server-renders the GeoLens product", async () => {
   const html = await response.text();
   assert.match(html, /<title>GeoLens \| סוכן פענוח לוויין עצמאי<\/title>/i);
   assert.match(html, /GeoLens/);
-  assert.match(html, /סוכן פענוח עצמאי/);
-  assert.match(html, /מה תרצה לאתר בכדור הארץ/);
+  assert.match(html, /סוכן פענוח/);
+  assert.match(html, /מה תרצה לאתר\?/);
+  assert.match(html, /קנבס ראשי/);
+  assert.match(html, /תצלום לוויין/);
   assert.match(html, /מפת ניתוח לוויין אינטראקטיבית/);
   assert.doesNotMatch(html, /חיישן ראשי|סצנה נבחרת|מצב זיהוי|מקורות פעילים/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
 test("keeps the evidence-first agent architecture and model routing visible in source", async () => {
-  const [page, layout, packageJson, agent, modelRouter, openRouter, dataBroker, mission, feasibility, gis, evidence, app, route] = await Promise.all([
+  const [page, layout, packageJson, agent, modelRouter, openRouter, dataBroker, mission, feasibility, gis, evidence, app, route, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -53,6 +55,7 @@ test("keeps the evidence-first agent architecture and model routing visible in s
     readFile(new URL("../lib/evidence.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/components/GeoAgentApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/analyze/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(page, /GeoAgentApp/);
   assert.match(layout, /lang="he"/);
@@ -85,6 +88,11 @@ test("keeps the evidence-first agent architecture and model routing visible in s
   assert.match(evidence, /geolens-evidence\/v1/);
   assert.match(app, /הורד GeoJSON/);
   assert.match(app, /Evidence Ledger/);
+  assert.match(app, /SatelliteCanvas/);
+  assert.match(app, /showDetails/);
+  assert.match(app, /setCanvasMode/);
+  assert.match(styles, /grid-template-areas:\s*"canvas chat"/);
+  assert.match(styles, /\.message-stream[\s\S]*?overflow-y:\s*auto/);
   assert.match(openRouter, /openrouter\/free/);
   assert.match(openRouter, /OPENROUTER_API_KEY/);
   assert.doesNotMatch(openRouter, /openrouter\/auto/);

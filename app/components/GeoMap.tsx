@@ -6,17 +6,22 @@ import { displayPreviewUrl } from "@/lib/preview-url";
 
 type GeoMapProps = {
   analysis: AnalysisResponse | null;
+  preferredSceneId?: string | null;
 };
 
-export function GeoMap({ analysis }: GeoMapProps) {
+export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<import("leaflet").Map | null>(null);
   const [ready, setReady] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
+    let resizeTimer: number | undefined;
 
     async function createMap() {
+      setReady(false);
+      setMapError(null);
       const L = await import("leaflet");
       if (!active || !containerRef.current) return;
       if (mapRef.current) {
@@ -30,7 +35,7 @@ export function GeoMap({ analysis }: GeoMapProps) {
       const map = L.map(containerRef.current, {
         zoomControl: true,
         attributionControl: true,
-        scrollWheelZoom: false,
+        scrollWheelZoom: window.matchMedia("(pointer: fine) and (min-width: 981px)").matches,
       }).setView(center, analysis?.location ? 9 : 5);
       mapRef.current = map;
 
@@ -51,13 +56,13 @@ export function GeoMap({ analysis }: GeoMapProps) {
 
       L.control
         .layers(
-          { "תצלום לוויין": satellite, "מפת רחובות": street },
+          { "רקע לווייני Esri": satellite, "מפת רחובות": street },
           {
             "Quicklook של הסצנה שנבחרה": scenePreviewLayer,
             "טביעת רגל של סצנות": sceneLayer,
             "אירועים וזיהויים": evidenceLayer,
           },
-          { position: "topright", collapsed: false },
+          { position: "topright", collapsed: true },
         )
         .addTo(map);
 
@@ -74,7 +79,8 @@ export function GeoMap({ analysis }: GeoMapProps) {
           .bindTooltip("אזור החיפוש שפוענח מהבקשה")
           .addTo(evidenceLayer);
 
-        const previewScene = analysis.scenes.find((scene) => scene.role === "primary" && scene.thumbnailUrl)
+        const previewScene = analysis.scenes.find((scene) => scene.id === preferredSceneId && scene.thumbnailUrl)
+          || analysis.scenes.find((scene) => scene.role === "primary" && scene.thumbnailUrl)
           || analysis.scenes.find((scene) => scene.thumbnailUrl);
         const previewUrl = displayPreviewUrl(previewScene?.thumbnailUrl || null);
         if (previewScene && previewUrl) {
@@ -170,36 +176,28 @@ export function GeoMap({ analysis }: GeoMapProps) {
         if (!analysis.detectionGeometry) map.fitBounds(analysisBounds.pad(0.08), { maxZoom: 11 });
       }
 
-      const legend = new L.Control({ position: "bottomleft" });
-      legend.onAdd = () => {
-        const element = L.DomUtil.create("div", "geo-map-legend");
-        element.innerHTML =
-          '<div><span class="legend-line legend-search"></span>אזור חיפוש</div>' +
-          '<div><span class="legend-line legend-preview"></span>Quicklook נבחר</div>' +
-          '<div><span class="legend-line legend-scene"></span>סצנת מקור</div>' +
-          '<div><span class="legend-dot"></span>אירוע קטלוגי</div>' +
-          '<div><span class="legend-line legend-model"></span>תוצאת מודל</div>';
-        return element;
-      };
-      legend.addTo(map);
-
-      window.setTimeout(() => map.invalidateSize(), 50);
+      resizeTimer = window.setTimeout(() => map.invalidateSize(), 50);
       setReady(true);
     }
 
-    createMap();
+    createMap().catch(() => {
+      if (!active) return;
+      setReady(false);
+      setMapError("המפה לא נטענה. אפשר לנסות שוב או לעבור לתצוגת תצלום הלוויין.");
+    });
     return () => {
       active = false;
+      if (resizeTimer !== undefined) window.clearTimeout(resizeTimer);
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
       }
     };
-  }, [analysis]);
+  }, [analysis, preferredSceneId]);
 
   return (
     <div className="map-shell" aria-label="מפת ניתוח לוויין אינטראקטיבית">
-      {!ready && <div className="map-loading">טוען שכבות לוויין</div>}
+      {!ready && <div className="map-loading">{mapError || "טוען שכבות לוויין"}</div>}
       <div ref={containerRef} className="geo-map" />
       <div className="map-status">
         <span className="live-dot" />
