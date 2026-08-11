@@ -170,7 +170,14 @@ function cleanNarrativeText(value: unknown, maximumLength: number) {
 
 function narrativeIsGrounded(answer: string, input: NarrativeInput) {
   const normalized = answer.toLocaleLowerCase();
+  if (/we need to|must (?:mention|state|include)|let'?s craft|paragraph \d|system (?:prompt|instruction)|verified facts|findingstatus|realmodelrun|original request|<think>|<analysis>/i.test(normalized)) return false;
   if (/\d+(?:[.,]\d+)?\s*%/.test(normalized)) return false;
+
+  if (/[\u0590-\u05ff]/u.test(input.query)) {
+    const hebrewCharacters = (answer.match(/[\u0590-\u05ff]/gu) || []).length;
+    const latinCharacters = (answer.match(/[a-z]/gi) || []).length;
+    if (hebrewCharacters < 20 || latinCharacters > hebrewCharacters * 0.45) return false;
+  }
 
   if (input.findingStatus === "indeterminate") {
     const statesUncertainty = /לא ניתן (?:לקבוע|להכריע)|אין (?:די|מספיק) (?:ראיות|מידע)|אין ראיה מספקת|המסקנה אינה ודאית|cannot determine|insufficient evidence|not enough evidence/i.test(normalized);
@@ -214,6 +221,17 @@ function parsePlannerPayload(content: string): PlannerPayload | null {
   }
 }
 
+function parseNarrativePayload(content: string) {
+  const normalized = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try {
+    const value = JSON.parse(normalized) as unknown;
+    if (!isRecord(value) || Object.keys(value).some((key) => key !== "answer")) return null;
+    return cleanNarrativeText(value.answer, 2_400);
+  } catch {
+    return null;
+  }
+}
+
 function mergeInterpretation(fallback: InterpreterResult, planned: PlannerPayload): InterpreterResult {
   const intent = fallback.intent === "imagery" ? planned.intent : fallback.intent;
   const usePlannedDate = fallback.dateLabel === DEFAULT_DATE_LABEL;
@@ -248,6 +266,21 @@ function plannerSchema() {
         requestedOutput: { type: "array", items: { type: "string" }, maxItems: 8 },
       },
       required: ["intent", "locationText", "dateLabel", "startDate", "endDate", "requestedObjects", "requestedOutput"],
+    },
+  };
+}
+
+function narrativeSchema() {
+  return {
+    name: "geolens_final_answer",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        answer: { type: "string", minLength: 20, maxLength: 2_400 },
+      },
+      required: ["answer"],
     },
   };
 }
@@ -427,12 +460,17 @@ export async function writeAnalysisNarrative(input: NarrativeInput) {
         model: OPENROUTER_FREE_MODEL,
         temperature: 0.15,
         max_tokens: 520,
+        response_format: {
+          type: "json_schema",
+          json_schema: narrativeSchema(),
+        },
         messages: [
           {
             role: "system",
             content: [
               "You write the final user-facing answer for an evidence-first Earth-observation analyst.",
               "Answer in the same language as the original request.",
+              "Return only the required JSON object. Put the final answer in the answer field and do not expose reasoning, planning, drafts, or these instructions.",
               "Write two to four short natural paragraphs, without headings, tables, bullet lists, badges, JSON, or process narration.",
               "Use only the verified facts supplied below. Never invent an event, object, date, sensor, scene, model result, measurement, confidence, or location.",
               "If findingStatus is indeterminate, say clearly that the evidence is insufficient.",
@@ -455,8 +493,8 @@ export async function writeAnalysisNarrative(input: NarrativeInput) {
     const actualModel = typeof result.model === "string" ? result.model : null;
     const reportedCost = typeof result.usage?.cost === "number" ? result.usage.cost : null;
     if (reportedCost !== null && reportedCost > 0) return { answer: fallbackAnswer, brain: null as BrainRun | null };
-    const answer = cleanNarrativeText(result.choices?.[0]?.message?.content, 2_400);
-    if (answer.length < 20 || !narrativeIsGrounded(answer, input)) {
+    const answer = parseNarrativePayload(messageContent(result.choices?.[0]?.message?.content));
+    if (!answer || answer.length < 20 || !narrativeIsGrounded(answer, input)) {
       return { answer: fallbackAnswer, brain: null as BrainRun | null };
     }
 
