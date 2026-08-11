@@ -798,23 +798,34 @@ a {
 }
 
 .basemap-switcher-button {
-  display: grid;
-  grid-template-columns: 68px minmax(0, 1fr);
-  align-items: stretch;
-  width: 158px;
-  min-height: 66px;
+  position: relative;
+  display: block;
+  isolation: isolate;
+  width: 84px;
+  height: 66px;
   padding: 4px;
-  gap: 8px;
   border: 1px solid rgba(231, 246, 241, 0.42);
   border-radius: 13px;
   color: var(--ink);
   background: rgba(7, 18, 17, 0.84);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
   cursor: pointer;
-  direction: ltr;
-  text-align: left;
   backdrop-filter: blur(16px) saturate(1.2);
-  transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
+  animation: basemap-frame-pulse 4.8s ease-in-out infinite;
+  transition: transform 160ms ease, background 160ms ease;
+}
+
+.basemap-switcher-button::after {
+  position: absolute;
+  inset: 1px;
+  z-index: 2;
+  border-radius: 11px;
+  background: linear-gradient(112deg, transparent 24%, rgba(255, 255, 255, 0.24) 48%, transparent 70%);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-125%);
+  animation: basemap-frame-sheen 5.8s ease-in-out infinite;
 }
 
 .basemap-switcher-button:hover,
@@ -831,7 +842,8 @@ a {
 
 .basemap-switcher-preview {
   display: block;
-  min-height: 56px;
+  width: 100%;
+  height: 100%;
   border-radius: 9px;
   background-color: #17312c;
   background-position: center;
@@ -839,34 +851,35 @@ a {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
 }
 
-.basemap-switcher-copy {
-  display: grid;
-  align-content: center;
-  gap: 2px;
-  min-width: 0;
-  direction: rtl;
-  text-align: right;
+@keyframes basemap-frame-pulse {
+  0%,
+  100% {
+    border-color: rgba(231, 246, 241, 0.42);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35), 0 0 0 0 rgba(114, 213, 255, 0);
+  }
+
+  50% {
+    border-color: rgba(183, 255, 74, 0.82);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35), 0 0 0 4px rgba(114, 213, 255, 0.08), 0 0 22px rgba(183, 255, 74, 0.2);
+  }
 }
 
-.basemap-switcher-eyebrow {
-  color: var(--lime);
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-}
+@keyframes basemap-frame-sheen {
+  0%,
+  36% {
+    opacity: 0;
+    transform: translateX(-125%);
+  }
 
-.basemap-switcher-label {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 11px;
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+  48% {
+    opacity: 0.72;
+  }
 
-.basemap-switcher-hint {
-  color: var(--muted);
-  font-size: 8px;
+  60%,
+  100% {
+    opacity: 0;
+    transform: translateX(125%);
+  }
 }
 
 .leaflet-popup-content {
@@ -989,13 +1002,8 @@ a {
   }
 
   .basemap-switcher-button {
-    grid-template-columns: 56px minmax(0, 1fr);
-    width: 142px;
-    min-height: 58px;
-  }
-
-  .basemap-switcher-preview {
-    min-height: 48px;
+    width: 70px;
+    height: 58px;
   }
 
   .chat-is-open .leaflet-bottom.leaflet-left {

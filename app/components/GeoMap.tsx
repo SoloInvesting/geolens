@@ -74,14 +74,13 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
           .replace("{s}", "a");
       };
 
-      const refreshBasemapControl = (button: HTMLButtonElement, preview: HTMLElement, label: HTMLElement) => {
+      const refreshBasemapControl = (button: HTMLButtonElement, preview: HTMLElement) => {
         const satelliteActive = map.hasLayer(satellite);
         const nextMode = satelliteActive ? "מפה" : "תצלום לוויין";
         button.setAttribute("aria-label", `עבור ל${nextMode}`);
         button.title = `עבור ל${nextMode}`;
         button.dataset.currentMode = satelliteActive ? "satellite" : "map";
         preview.style.backgroundImage = `url("${tilePreviewUrl(satelliteActive ? basemapTemplate.street : basemapTemplate.satellite)}")`;
-        label.textContent = nextMode;
       };
 
       basemapControl.onAdd = () => {
@@ -89,13 +88,7 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
         const button = L.DomUtil.create("button", "basemap-switcher-button", container) as HTMLButtonElement;
         button.type = "button";
         const preview = L.DomUtil.create("span", "basemap-switcher-preview", button);
-        const copy = L.DomUtil.create("span", "basemap-switcher-copy", button);
-        const eyebrow = L.DomUtil.create("span", "basemap-switcher-eyebrow", copy);
-        eyebrow.textContent = "רקע הבא";
-        const label = L.DomUtil.create("strong", "basemap-switcher-label", copy);
-        const hint = L.DomUtil.create("small", "basemap-switcher-hint", copy);
-        hint.textContent = "לחץ להחלפה";
-        const refresh = () => refreshBasemapControl(button, preview, label);
+        const refresh = () => refreshBasemapControl(button, preview);
         const toggle = () => {
           if (map.hasLayer(satellite)) {
             map.removeLayer(satellite);
