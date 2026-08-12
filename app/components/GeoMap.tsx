@@ -2,11 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { AnalysisResponse } from "@/app/types";
+import type { GeoJsonGeometry } from "@/app/types";
 import { displayPreviewUrl } from "@/lib/preview-url";
+import { buildMapSession, isVerifiedDetection } from "@/lib/map-session";
 
 type GeoMapProps = {
   analysis: AnalysisResponse | null;
   preferredSceneId?: string | null;
+  draftAoi?: GeoJsonGeometry | null;
+  onAoiDrawn?: (geometry: GeoJsonGeometry) => void;
 };
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -44,11 +48,17 @@ function detectionScore(properties: Record<string, unknown>) {
   return null;
 }
 
-export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
+export function GeoMap({ analysis, preferredSceneId = null, draftAoi = null, onAoiDrawn }: GeoMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<import("leaflet").Map | null>(null);
+  const onAoiDrawnRef = useRef(onAoiDrawn);
+  const mapSession = buildMapSession(analysis, preferredSceneId);
   const [ready, setReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
+
+  useEffect(() => {
+    onAoiDrawnRef.current = onAoiDrawn;
+  }, [onAoiDrawn]);
 
   useEffect(() => {
     let active = true;
@@ -87,9 +97,12 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
         maxZoom: 19,
         attribution: "© OpenStreetMap contributors",
       });
-      const evidenceLayer = L.layerGroup().addTo(map);
+      const aoiLayer = L.layerGroup().addTo(map);
       const sceneLayer = L.layerGroup().addTo(map);
-      const scenePreviewLayer = L.layerGroup().addTo(map);
+      const sourceLayer = L.layerGroup().addTo(map);
+      const eventLayer = L.layerGroup().addTo(map);
+      const modelLayer = L.layerGroup().addTo(map);
+      const drawingLayer = L.layerGroup().addTo(map);
 
       const basemapControl = new L.Control({ position: "topleft" });
       const basemapTemplate = {
@@ -147,6 +160,109 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
       };
       basemapControl.addTo(map);
 
+      const layerControl = new L.Control({ position: "topright" });
+      layerControl.onAdd = () => {
+        const container = L.DomUtil.create("div", "map-layer-switcher leaflet-bar");
+        const title = L.DomUtil.create("strong", "map-layer-title", container);
+        title.textContent = "שכבות";
+        const definitions = [
+          ["aoi", "אזור חיפוש", aoiLayer],
+          ["scene", "טביעות סצנות", sceneLayer],
+          ["source", "תמונת מקור", sourceLayer],
+          ["event", "אירועי קטלוג", eventLayer],
+          ["model", "תוצאת מודל", modelLayer],
+        ] as const;
+        for (const [key, label, layer] of definitions) {
+          const button = L.DomUtil.create("button", "map-layer-toggle", container) as HTMLButtonElement;
+          button.type = "button";
+          button.dataset.layer = key;
+          button.textContent = label;
+          const refresh = () => {
+            const active = map.hasLayer(layer);
+            button.setAttribute("aria-pressed", String(active));
+            button.classList.toggle("is-active", active);
+          };
+          const toggle = () => {
+            if (map.hasLayer(layer)) map.removeLayer(layer);
+            else layer.addTo(map);
+            refresh();
+          };
+          button.addEventListener("click", toggle);
+          refresh();
+          L.DomEvent.disableClickPropagation(button);
+        }
+        L.DomEvent.disableClickPropagation(container);
+        L.DomEvent.disableScrollPropagation(container);
+        return container;
+      };
+      layerControl.addTo(map);
+
+      const drawingControl = new L.Control({ position: "topright" });
+      drawingControl.onAdd = () => {
+        const container = L.DomUtil.create("div", "map-drawing-control leaflet-bar");
+        const button = L.DomUtil.create("button", "map-drawing-button", container) as HTMLButtonElement;
+        button.type = "button";
+        button.textContent = "סמן AOI";
+        let drawing = false;
+        let points: import("leaflet").LatLng[] = [];
+        let preview: import("leaflet").Polygon | null = null;
+        const renderPreview = () => {
+          if (preview) drawingLayer.removeLayer(preview);
+          if (points.length < 2) {
+            preview = null;
+            return;
+          }
+          preview = L.polygon(points, {
+            color: "#b7ff4a",
+            weight: 2,
+            dashArray: "5 5",
+            fillColor: "#b7ff4a",
+            fillOpacity: 0.12,
+          });
+          drawingLayer.addLayer(preview);
+        };
+        const finish = () => {
+          if (points.length < 3) return;
+          const coordinates = points.map((point) => [point.lng, point.lat] as [number, number]);
+          coordinates.push(coordinates[0]);
+          onAoiDrawnRef.current?.({ type: "Polygon", coordinates: [coordinates] });
+          drawing = false;
+          points = [];
+          if (preview) drawingLayer.removeLayer(preview);
+          preview = null;
+          button.textContent = "סמן AOI";
+          button.setAttribute("aria-pressed", "false");
+        };
+        const click = () => {
+          if (drawing && points.length >= 3) {
+            finish();
+            return;
+          }
+          drawing = !drawing;
+          points = [];
+          if (preview) drawingLayer.removeLayer(preview);
+          preview = null;
+          button.textContent = drawing ? "סיום סימון" : "סמן AOI";
+          button.setAttribute("aria-pressed", String(drawing));
+        };
+        const mapClick = (event: import("leaflet").LeafletMouseEvent) => {
+          if (!drawing) return;
+          points.push(event.latlng);
+          renderPreview();
+        };
+        button.addEventListener("click", click);
+        map.on("click", mapClick);
+        L.DomEvent.disableClickPropagation(container);
+        return container;
+      };
+      drawingControl.addTo(map);
+
+      if (draftAoi) {
+        L.geoJSON(draftAoi as Parameters<typeof L.geoJSON>[0], {
+          style: { color: "#b7ff4a", weight: 2.5, dashArray: "8 6", fillColor: "#b7ff4a", fillOpacity: 0.08 },
+        }).bindTooltip("AOI שסומן על ידי המשתמש").addTo(drawingLayer);
+      }
+
       if (analysis?.location) {
         const [west, south, east, north] = analysis.location.bbox;
         const analysisBounds = L.latLngBounds([south, west], [north, east]);
@@ -158,7 +274,7 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
           fillOpacity: 0.04,
         })
           .bindTooltip("אזור החיפוש שפוענח מהבקשה")
-          .addTo(evidenceLayer);
+          .addTo(aoiLayer);
 
         const previewScene = analysis.scenes.find((scene) => scene.id === preferredSceneId && scene.thumbnailUrl)
           || analysis.scenes.find((scene) => scene.role === "primary" && scene.thumbnailUrl)
@@ -176,8 +292,9 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
           });
           const previewPopup = document.createElement("div");
           previewPopup.dir = "rtl";
-          previewPopup.textContent = `Quicklook של ${previewScene.instrument} מ-${new Date(previewScene.datetime).toLocaleDateString("he-IL")}. זו תצוגת מקור, לא הוכחה שהמודל פענח את פיקסלי המפה הבסיסית.`;
-          preview.bindPopup(previewPopup).addTo(scenePreviewLayer);
+          const sourceEvidenceId = analysis.ledger.entries.find((entry) => entry.kind === "scene" && entry.sourceId === previewScene.id)?.id || "ללא מזהה ראיה";
+          previewPopup.textContent = `Quicklook של ${previewScene.instrument} מ-${new Date(previewScene.datetime).toLocaleDateString("he-IL")}. ${sourceEvidenceId}. זו תצוגת מקור, לא הוכחה שהמודל פענח את פיקסלי המפה הבסיסית.`;
+          preview.bindPopup(previewPopup).addTo(sourceLayer);
         }
 
         for (const [index, scene] of analysis.scenes.entries()) {
@@ -224,15 +341,16 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
           popup.appendChild(label);
           popup.appendChild(document.createElement("br"));
           popup.appendChild(source);
-          marker.bindTooltip(tooltip).bindPopup(popup).addTo(evidenceLayer);
+          marker.bindTooltip(tooltip).bindPopup(popup).addTo(eventLayer);
         }
 
         const verifiedDetection = analysis.findingStatus === "detected"
           && analysis.feasibility.realModelRun
           && analysis.model.status === "completed"
+          && isVerifiedDetection(analysis)
           && analysis.detectionGeometry;
         if (verifiedDetection) {
-          const detectionLayer = L.geoJSON(verifiedDetection as Parameters<typeof L.geoJSON>[0], {
+          const detectionGeoJson = L.geoJSON(verifiedDetection as Parameters<typeof L.geoJSON>[0], {
             style: (feature) => {
               const color = detectionPalette(recordValue(feature?.properties));
               return {
@@ -286,10 +404,10 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
             detectionPopup.textContent = analysis.measurements?.areaKm2 === null || !analysis.measurements
               ? `תוצאת ${analysis.model.name}${analysis.model.runId ? ` · ריצה ${analysis.model.runId}` : ""}`
               : `תוצאת ${analysis.model.name} · שטח ${analysis.measurements.areaKm2.toLocaleString("he-IL")} קמ״ר${analysis.model.runId ? ` · ריצה ${analysis.model.runId}` : ""}`;
-            detectionLayer.bindTooltip("תוצאת מודל מאומתת").bindPopup(detectionPopup);
+            detectionGeoJson.bindTooltip("תוצאת מודל מאומתת").bindPopup(detectionPopup);
           }
-          detectionLayer.addTo(evidenceLayer);
-          const detectedBounds = detectionLayer.getBounds();
+          detectionGeoJson.addTo(modelLayer);
+          const detectedBounds = detectionGeoJson.getBounds();
           if (detectedBounds.isValid()) map.fitBounds(detectedBounds.pad(0.15), { maxZoom: 18 });
         }
 
@@ -313,7 +431,7 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
         mapRef.current = null;
       }
     };
-  }, [analysis, preferredSceneId]);
+  }, [analysis, preferredSceneId, draftAoi]);
 
   return (
     <div className="map-shell" aria-label="מפת ניתוח לוויין אינטראקטיבית">
@@ -321,7 +439,7 @@ export function GeoMap({ analysis, preferredSceneId = null }: GeoMapProps) {
       <div ref={containerRef} className="geo-map" />
       <div className="map-status">
         <span className="live-dot" />
-        {analysis ? `${analysis.scenes.length} סצנות · ${analysis.feasibility.eligibleSceneIds.length} כשירות לניתוח · ${analysis.events.length} אירועים · ${analysis.findingStatus}` : "ממתין לבקשת פענוח"}
+        {analysis ? `${mapSession?.assets.length || 0} שכבות מקושרות לראיות · ${analysis.findingStatus}` : "ממתין לבקשת פענוח"}
       </div>
     </div>
   );
