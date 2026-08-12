@@ -1,5 +1,6 @@
 import type {
   AnalysisIntent,
+  GeoJsonGeometry,
   InterpreterResult,
   MissionSpec,
 } from "@/app/types";
@@ -12,6 +13,7 @@ export type MissionLocation = {
   longitude: number;
   bbox: [number, number, number, number];
   source?: "validated-geocoder" | "known-location" | "coordinates";
+  geometry?: GeoJsonGeometry;
 };
 
 export type BuildMissionInput = {
@@ -161,6 +163,7 @@ function validatedLocation(location: MissionLocation) {
     latitude: roundCoordinate(location.latitude),
     bbox: [west, south, east, north].map(roundCoordinate) as [number, number, number, number],
     source: location.source ?? "validated-geocoder",
+    geometry: location.geometry,
   };
 }
 
@@ -214,7 +217,7 @@ export function buildMissionSpec(input: BuildMissionInput): MissionSpec {
     aoi: {
       label: location.name,
       bbox: location.bbox,
-      geometry: {
+      geometry: location.geometry || {
         type: "Polygon",
         coordinates: [[
           [west, south],
