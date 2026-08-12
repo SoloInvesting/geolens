@@ -2,6 +2,7 @@ import { analyzeRequest, resolveLocation } from "@/lib/agent";
 import type { ConversationContext } from "@/app/types";
 import { answerConversationQuestion, isStandalonePlaceQuestion } from "@/lib/conversation";
 import { extractLocationCandidate } from "@/lib/request-parser";
+import { normalizeGeoJsonGeometry } from "@/lib/gis";
 
 const MAX_BODY_BYTES = 24 * 1024;
 const MAX_QUERY_CHARACTERS = 1_500;
@@ -148,9 +149,9 @@ export async function POST(request: Request) {
     if (new TextEncoder().encode(rawBody).byteLength > MAX_BODY_BYTES) {
       return jsonResponse({ error: "הבקשה גדולה מהמגבלה המותרת." }, 413);
     }
-    let body: { query?: unknown; clientDate?: unknown; conversationContext?: unknown };
+    let body: { query?: unknown; clientDate?: unknown; conversationContext?: unknown; aoiGeometry?: unknown };
     try {
-      body = JSON.parse(rawBody) as { query?: unknown; clientDate?: unknown };
+      body = JSON.parse(rawBody) as { query?: unknown; clientDate?: unknown; conversationContext?: unknown; aoiGeometry?: unknown };
     } catch {
       return jsonResponse({ error: "גוף הבקשה אינו JSON תקין." }, 400);
     }
@@ -163,6 +164,12 @@ export async function POST(request: Request) {
     }
     const clientDate = validClientDate(body.clientDate);
     const conversationContext = validConversationContext(body.conversationContext);
+    const suppliedAoi = body.aoiGeometry === undefined || body.aoiGeometry === null
+      ? null
+      : normalizeGeoJsonGeometry(body.aoiGeometry);
+    if (body.aoiGeometry !== undefined && body.aoiGeometry !== null && (!suppliedAoi || !["Polygon", "MultiPolygon", "FeatureCollection"].includes(suppliedAoi.type))) {
+      return jsonResponse({ error: "אזור שסומן במפה חייב להיות פוליגון GeoJSON תקין ב־WGS84." }, 400);
+    }
     const conversationalAnswer = answerConversationQuestion(query, conversationContext);
     if (conversationalAnswer) return jsonResponse(conversationalAnswer);
     if (isStandalonePlaceQuestion(query)) {
@@ -187,7 +194,7 @@ export async function POST(request: Request) {
         generatedAt: new Date().toISOString(),
       });
     }
-    const result = await analyzeRequest(query, { referenceDate: clientDate, conversationContext });
+    const result = await analyzeRequest(query, { referenceDate: clientDate, conversationContext, aoiGeometry: suppliedAoi });
     return jsonResponse(result);
   } catch {
     return jsonResponse({
