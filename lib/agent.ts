@@ -15,7 +15,7 @@ import { planWithOpenRouter, writeAnalysisNarrative } from "@/lib/openrouter";
 import { querySatelliteScenes } from "@/lib/data-broker";
 import { buildMissionSpec } from "@/lib/mission";
 import { assessFeasibility, type ModelObservation } from "@/lib/feasibility";
-import { tryMeasureGeometry } from "@/lib/gis";
+import { geometryBbox, normalizeGeoJsonGeometry, tryMeasureGeometry } from "@/lib/gis";
 import { buildEvidenceLedger } from "@/lib/evidence";
 import { applyConversationContext } from "@/lib/conversation";
 import {
@@ -1106,7 +1106,11 @@ function buildLimitations(
 
 export async function analyzeRequest(
   query: string,
-  options: { referenceDate?: string; conversationContext?: ConversationContext | null } = {},
+  options: {
+    referenceDate?: string;
+    conversationContext?: ConversationContext | null;
+    aoiGeometry?: GeoJsonGeometry | null;
+  } = {},
 ): Promise<AnalysisResponse> {
   const cleanedQuery = query.trim().slice(0, 1_500);
   const serverDate = new Date().toISOString().slice(0, 10);
@@ -1132,6 +1136,29 @@ export async function analyzeRequest(
     interpreter = objectAwareInterpretation(plan.interpretation, cleanedQuery);
     brain = plan.brain;
     location = await resolveLocation(interpreter.locationText, cleanedQuery, plan.alternateLocationText);
+  }
+
+  const customAoi = options.aoiGeometry ? normalizeGeoJsonGeometry(options.aoiGeometry) : null;
+  const customAoiIsUsable = customAoi && (customAoi.type === "Polygon" || customAoi.type === "MultiPolygon" || customAoi.type === "FeatureCollection");
+  if (!location && customAoiIsUsable) {
+    const customBbox = geometryBbox(customAoi);
+    location = {
+      name: "אזור שסומן על המפה",
+      latitude: (customBbox[1] + customBbox[3]) / 2,
+      longitude: (customBbox[0] + customBbox[2]) / 2,
+      bbox: customBbox,
+      source: "coordinates",
+      matchQuality: "exact",
+      resultType: "user-drawn-aoi",
+    };
+  }
+  if (location && customAoiIsUsable) {
+    const customBbox = geometryBbox(customAoi);
+    location = {
+      ...location,
+      name: `${location.name} · אזור שסומן על המפה`,
+      bbox: customBbox,
+    };
   }
   const recipe = recipeFor(interpreter);
 
@@ -1203,7 +1230,13 @@ export async function analyzeRequest(
     };
   }
 
-  const mission = buildMissionSpec({ interpreter, location });
+  const mission = buildMissionSpec({
+    interpreter,
+    location: {
+      ...location,
+      geometry: customAoi || undefined,
+    },
+  });
   const aoiMeasurements = tryMeasureGeometry(mission.aoi.geometry);
   const oversizedSpecialistAoi = interpreter.intent !== "imagery"
     && aoiMeasurements?.areaKm2 !== null
