@@ -281,6 +281,57 @@ export type AnalysisResponse = {
   generatedAt: string;
 };
 
+/**
+ * A map asset is a presentation object, not a new source of truth. Every
+ * non-context layer must point back to the mission ledger so that the map can
+ * never silently turn an unverified geometry into a finding.
+ */
+export type MapAssetKind =
+  | "aoi"
+  | "source-footprint"
+  | "source-image"
+  | "detection"
+  | "catalog-event"
+  | "measurement";
+
+export type MapAssetStatus = "verified" | "context" | "user-drawn";
+
+export type MapAsset = {
+  id: string;
+  kind: MapAssetKind;
+  title: string;
+  geometry: GeoJsonGeometry | null;
+  bbox: [number, number, number, number] | null;
+  imageUrl: string | null;
+  visible: boolean;
+  opacity: number;
+  status: MapAssetStatus;
+  provenance: {
+    missionId: string;
+    evidenceIds: string[];
+    sceneId: string | null;
+    modelRunId: string | null;
+    observedAt: string | null;
+    source: string | null;
+  };
+};
+
+export type MapSession = {
+  schemaVersion: "geolens-map/v1";
+  sessionId: string;
+  missionId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  viewport: {
+    center: [number, number] | null;
+    bbox: [number, number, number, number] | null;
+    zoom: number | null;
+  };
+  basemap: "satellite" | "street";
+  assets: MapAsset[];
+};
+
 export type ConversationContext = {
   previousQuery: string;
   previousAnswer: string;
