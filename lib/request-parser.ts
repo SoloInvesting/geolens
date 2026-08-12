@@ -308,6 +308,28 @@ const LEADING_QUERY_WORDS = new Set([
   "check",
   "locate",
   "please",
+  "איפה",
+  "היכן",
+  "נמצאת",
+  "נמצא",
+  "מה",
+  "אתה",
+  "יודע",
+  "על",
+  "תראה",
+  "תציג",
+  "לי",
+  "את",
+  "העיר",
+  "המדינה",
+  "ומה",
+  "לגבי",
+  "where",
+  "is",
+  "what",
+  "about",
+  "tell",
+  "me",
 ]);
 
 function toIsoDate(date: Date) {
@@ -575,7 +597,21 @@ export function extractLocationCandidate(query: string) {
 
   const bareHebrewPattern = new RegExp(`^\\s*([א-ת׳״'" -]{2,}?)(?=\\s+(?:${HEBREW_TEMPORAL_STOP}))`);
   const bareHebrew = trimLeadingQueryWords(query.match(bareHebrewPattern)?.[1] || "");
-  return isPlausibleLocationCandidate(bareHebrew) ? bareHebrew : "";
+  if (isPlausibleLocationCandidate(bareHebrew)) return bareHebrew;
+
+  const conversationalHebrew = trimLeadingQueryWords(
+    query
+      .replace(/[?!.،,]+$/u, "")
+      .replace(/^(?:ו?מה\s+לגבי|איפה(?:\s+(?:נמצאים|נמצאות|נמצאת|נמצא))?|היכן(?:\s+(?:נמצאת|נמצא))?|מה\s+(?:אתה|את)\s+יודע(?:ת)?\s+על|ת(?:ראה|ציג)\s+לי(?:\s+את)?(?:\s+העיר|\s+המדינה)?|ספר\s+לי\s+על)\s*/u, ""),
+  );
+  if (isPlausibleLocationCandidate(conversationalHebrew)) return conversationalHebrew;
+
+  const conversationalEnglish = trimLeadingQueryWords(
+    query
+      .replace(/[?!.]+$/u, "")
+      .replace(/^(?:and\s+)?(?:what\s+about|where\s+is|tell\s+me\s+about|show\s+me(?:\s+the\s+(?:city|country)\s+of)?)\s+/iu, ""),
+  );
+  return isPlausibleLocationCandidate(conversationalEnglish) ? conversationalEnglish : "";
 }
 
 function includesAny(query: string, terms: string[]) {

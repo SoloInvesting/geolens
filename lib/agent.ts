@@ -8,6 +8,7 @@ import type {
   InterpreterResult,
   ModelRun,
   SceneResult,
+  ConversationContext,
 } from "@/app/types";
 import { runDedicatedModel, selectedModel } from "@/lib/model-router";
 import { planWithOpenRouter, writeAnalysisNarrative } from "@/lib/openrouter";
@@ -16,6 +17,7 @@ import { buildMissionSpec } from "@/lib/mission";
 import { assessFeasibility, type ModelObservation } from "@/lib/feasibility";
 import { tryMeasureGeometry } from "@/lib/gis";
 import { buildEvidenceLedger } from "@/lib/evidence";
+import { applyConversationContext } from "@/lib/conversation";
 import {
   extractOpenVocabularyObjects,
   extractLocationCandidate,
@@ -1104,7 +1106,7 @@ function buildLimitations(
 
 export async function analyzeRequest(
   query: string,
-  options: { referenceDate?: string } = {},
+  options: { referenceDate?: string; conversationContext?: ConversationContext | null } = {},
 ): Promise<AnalysisResponse> {
   const cleanedQuery = query.trim().slice(0, 1_500);
   const serverDate = new Date().toISOString().slice(0, 10);
@@ -1117,11 +1119,14 @@ export async function analyzeRequest(
     && parsedReferenceDate.toISOString().slice(0, 10) === candidateReferenceDate
       ? candidateReferenceDate
       : serverDate;
-  const fallbackInterpreter = buildInterpreter(cleanedQuery, referenceDate);
+  const localInterpreter = buildInterpreter(cleanedQuery, referenceDate);
+  const contextualized = applyConversationContext(cleanedQuery, localInterpreter, options.conversationContext || null);
+  const fallbackInterpreter = contextualized.interpreter;
   let plan = await planWithOpenRouter(cleanedQuery, fallbackInterpreter, false, referenceDate);
   let interpreter = objectAwareInterpretation(plan.interpretation, cleanedQuery);
   let brain = plan.brain;
-  let location = await resolveLocation(interpreter.locationText, cleanedQuery, plan.alternateLocationText);
+  let location = contextualized.inheritedLocation
+    || await resolveLocation(interpreter.locationText, cleanedQuery, plan.alternateLocationText);
   if (!location && brain.provider === "GeoLens" && brain.status === "completed") {
     plan = await planWithOpenRouter(cleanedQuery, fallbackInterpreter, true, referenceDate);
     interpreter = objectAwareInterpretation(plan.interpretation, cleanedQuery);

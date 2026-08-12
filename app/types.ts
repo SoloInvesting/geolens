@@ -280,3 +280,35 @@ export type AnalysisResponse = {
   exportsVersion: "geolens-export/v1";
   generatedAt: string;
 };
+
+export type ConversationContext = {
+  previousQuery: string;
+  previousAnswer: string;
+  interpretation: InterpreterResult;
+  location: AnalysisResponse["location"];
+  sensors: string[];
+  sceneCount: number;
+  eligibleSceneCount: number;
+  findingStatus: FindingStatus;
+  feasibilityStatus: FeasibilityStatus;
+  model: {
+    name: string;
+    status: ModelExecutionStatus;
+    realModelRun: boolean;
+    detected: boolean | null;
+    message: string;
+  };
+  limitations: string[];
+  clarification: string | null;
+};
+
+export type ConversationAnswerResponse = {
+  kind: "answer";
+  ok: true;
+  answer: string;
+  location: AnalysisResponse["location"];
+  contextUsed: boolean;
+  generatedAt: string;
+};
+
+export type AgentResponse = AnalysisResponse | ConversationAnswerResponse;

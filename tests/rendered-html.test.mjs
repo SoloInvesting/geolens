@@ -33,6 +33,7 @@ test("server-renders the GeoLens product", async () => {
   assert.match(html, /GeoLens/);
   assert.match(html, /מה תרצה לאתר\?/);
   assert.match(html, /שיחה עם GeoLens/);
+  assert.match(html, /שיחה חדשה/);
   assert.match(html, /תצלום לוויין/);
   assert.match(html, /מפת ניתוח לוויין אינטראקטיבית/);
   assert.doesNotMatch(html, /MissionSpec|שער היתכנות|תהליך הפענוח|מתכון פענוח/);
@@ -93,6 +94,8 @@ test("keeps the evidence-first agent architecture and model routing visible in s
   assert.match(app, /AssistantTextMessage/);
   assert.match(app, /SatelliteCanvas/);
   assert.match(app, /setCanvasMode/);
+  assert.match(app, /resetConversation/);
+  assert.match(app, /conversationContext/);
   assert.match(map, /analysis\.feasibility\.realModelRun/);
   assert.match(map, /analysis\.model\.status === "completed"/);
   assert.match(map, /detectionPalette/);

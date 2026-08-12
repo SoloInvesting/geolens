@@ -114,6 +114,20 @@ test("rejects temporal and analysis terms as locations", () => {
   assert.equal(isPlausibleLocationCandidate("New Orleans"), true);
 });
 
+test("understands basic conversational place questions", () => {
+  const cases = [
+    ["איפה נמצאת מדריד?", "מדריד"],
+    ["מה אתה יודע על פריז?", "פריז"],
+    ["תראה לי את העיר ניו יורק", "ניו יורק"],
+    ["ומה לגבי ולנסיה?", "ולנסיה"],
+    ["where is Barcelona?", "Barcelona"],
+    ["what about Lisbon?", "Lisbon"],
+  ];
+  for (const [query, expected] of cases) {
+    assert.equal(extractLocationCandidate(query), expected, query);
+  }
+});
+
 test("preserves explicit calendar dates", () => {
   assert.deepEqual(parseDateRange("בדוק שריפה במדריד ב-2024-08-15", FIXED_NOW), {
     startDate: "2024-08-10",

@@ -2,13 +2,22 @@
 
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import type { AnalysisResponse, BrainRun, GeoJsonGeometry, SceneResult } from "@/app/types";
+import type {
+  AgentResponse,
+  AnalysisResponse,
+  BrainRun,
+  ConversationAnswerResponse,
+  ConversationContext,
+  GeoJsonGeometry,
+  SceneResult,
+} from "@/app/types";
 import { displayPreviewUrl } from "@/lib/preview-url";
 import { GeoMap } from "./GeoMap";
 
 type ConversationItem =
   | { id: string; role: "user"; text: string }
   | { id: string; role: "assistant"; result: AnalysisResponse }
+  | { id: string; role: "answer"; response: ConversationAnswerResponse }
   | { id: string; role: "error"; text: string };
 
 type CanvasMode = "map" | "satellite";
@@ -71,6 +80,34 @@ function localCalendarDate() {
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function conversationContext(result: AnalysisResponse | null): ConversationContext | null {
+  if (!result) return null;
+  return {
+    previousQuery: result.query,
+    previousAnswer: result.answer,
+    interpretation: result.interpretation,
+    location: result.location,
+    sensors: [...new Set(result.scenes.map((scene) => scene.instrument).filter(Boolean))].slice(0, 8),
+    sceneCount: result.scenes.length,
+    eligibleSceneCount: result.feasibility.eligibleSceneIds.length,
+    findingStatus: result.findingStatus,
+    feasibilityStatus: result.feasibility.status,
+    model: {
+      name: result.model.name,
+      status: result.model.status,
+      realModelRun: result.feasibility.realModelRun,
+      detected: result.model.detected,
+      message: result.model.message,
+    },
+    limitations: result.limitations.slice(0, 8),
+    clarification: result.clarification,
+  };
+}
+
+function isConversationAnswer(payload: AgentResponse): payload is ConversationAnswerResponse {
+  return "kind" in payload && payload.kind === "answer";
 }
 
 function downloadArtifact(filename: string, value: unknown, mime = "application/json") {
@@ -287,6 +324,8 @@ export function GeoAgentApp() {
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const chatLauncherRef = useRef<HTMLButtonElement>(null);
   const evidenceTriggerRef = useRef<HTMLButtonElement>(null);
+  const activeRequestRef = useRef<AbortController | null>(null);
+  const requestGenerationRef = useRef(0);
   const messageSequence = useRef(0);
 
   useEffect(() => {
@@ -328,33 +367,73 @@ export function GeoAgentApp() {
     messageSequence.current += 1;
     setConversation((items) => [...items, { id: `user-${messageSequence.current}`, role: "user", text }]);
 
+    const controller = new AbortController();
+    activeRequestRef.current = controller;
+    const requestGeneration = requestGenerationRef.current;
     try {
       const response = await fetch("/api/analyze", {
         method: "POST",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: text, clientDate: localCalendarDate() }),
+        body: JSON.stringify({
+          query: text,
+          clientDate: localCalendarDate(),
+          conversationContext: conversationContext(analysis),
+        }),
       });
-      const payload = (await response.json()) as AnalysisResponse | { error: string };
+      const payload = (await response.json()) as AgentResponse | { error: string };
       if (!response.ok || "error" in payload) throw new Error("error" in payload ? payload.error : "הניתוח נכשל");
+      if (requestGeneration !== requestGenerationRef.current) return;
+
+      messageSequence.current += 1;
+      if (isConversationAnswer(payload)) {
+        setConversation((items) => [...items, { id: `answer-${messageSequence.current}`, role: "answer", response: payload }]);
+        setStatusMessage("התשובה הושלמה.");
+        return;
+      }
 
       setAnalysis(payload);
       setSelectedSceneId(null);
       setEvidenceOpen(false);
       if (!payload.scenes.some((scene) => displayPreviewUrl(scene.thumbnailUrl))) setCanvasMode("map");
       window.localStorage.setItem("geolens-last-analysis", JSON.stringify(payload));
-      messageSequence.current += 1;
       const assistantId = `assistant-${messageSequence.current}`;
       setActiveResultId(assistantId);
       setConversation((items) => [...items, { id: assistantId, role: "assistant", result: payload }]);
       setStatusMessage("הפענוח הושלם.");
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (requestGeneration !== requestGenerationRef.current) return;
       const message = error instanceof Error ? error.message : "הסוכן לא הצליח להשלים את הניתוח.";
       messageSequence.current += 1;
       setConversation((items) => [...items, { id: `error-${messageSequence.current}`, role: "error", text: message }]);
       setStatusMessage(`הפענוח נכשל: ${message}`);
     } finally {
-      setBusy(false);
+      if (requestGeneration === requestGenerationRef.current) {
+        setBusy(false);
+        activeRequestRef.current = null;
+      }
     }
+  }
+
+  function resetConversation() {
+    requestGenerationRef.current += 1;
+    activeRequestRef.current?.abort();
+    activeRequestRef.current = null;
+    window.localStorage.removeItem("geolens-last-analysis");
+    messageSequence.current = 0;
+    setQuery("");
+    setConversation([]);
+    setAnalysis(null);
+    setActiveResultId(null);
+    setSelectedSceneId(null);
+    setFailedPreviewIds([]);
+    setEvidenceOpen(false);
+    setCanvasMode("map");
+    setBusy(false);
+    setBrainStage(0);
+    setStatusMessage("השיחה אופסה.");
+    window.requestAnimationFrame(() => promptRef.current?.focus());
   }
 
   function handleSubmit(event: FormEvent) {
@@ -444,14 +523,23 @@ export function GeoAgentApp() {
               <strong>שיחה עם GeoLens</strong>
               <span>{analysis?.location?.name || "שאל על אירוע, מקום או זמן"}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setChatOpen(false);
-                window.requestAnimationFrame(() => chatLauncherRef.current?.focus());
-              }}
-              aria-label="מזעור הצ׳אט"
-            >מזער</button>
+            <div className="chat-header-actions">
+              <button
+                type="button"
+                className="reset-chat"
+                onClick={resetConversation}
+                disabled={!conversation.length && !query && !busy}
+                aria-label="פתיחת שיחה חדשה ונקייה"
+              >שיחה חדשה</button>
+              <button
+                type="button"
+                onClick={() => {
+                  setChatOpen(false);
+                  window.requestAnimationFrame(() => chatLauncherRef.current?.focus());
+                }}
+                aria-label="מזעור הצ׳אט"
+              >מזער</button>
+            </div>
           </header>
 
           <p className="sr-only" aria-live="polite">{statusMessage}</p>
@@ -471,6 +559,11 @@ export function GeoAgentApp() {
             {conversation.map((item) => {
               if (item.role === "user") return <div className="user-message" key={item.id}>{item.text}</div>;
               if (item.role === "error") return <div className="error-message" role="alert" key={item.id}>{item.text}</div>;
+              if (item.role === "answer") return (
+                <article className="assistant-message conversation-answer" key={item.id}>
+                  <p className="assistant-answer"><span className="sr-only">תשובת GeoLens: </span>{item.response.answer}</p>
+                </article>
+              );
               return (
                 <AssistantTextMessage
                   key={item.id}

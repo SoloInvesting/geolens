@@ -1,7 +1,11 @@
-import { analyzeRequest } from "@/lib/agent";
+import { analyzeRequest, resolveLocation } from "@/lib/agent";
+import type { ConversationContext } from "@/app/types";
+import { answerConversationQuestion, isStandalonePlaceQuestion } from "@/lib/conversation";
+import { extractLocationCandidate } from "@/lib/request-parser";
 
-const MAX_BODY_BYTES = 16 * 1024;
+const MAX_BODY_BYTES = 24 * 1024;
 const MAX_QUERY_CHARACTERS = 1_500;
+const MAX_CONTEXT_CHARACTERS = 8_000;
 const RATE_CAPACITY = 6;
 const RATE_REFILL_PER_MS = RATE_CAPACITY / 60_000;
 const MAX_CONCURRENT_PER_CLIENT = 2;
@@ -93,6 +97,32 @@ function validClientDate(value: unknown) {
     : undefined;
 }
 
+function cleanText(value: unknown, maximum: number) {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, maximum) : "";
+}
+
+function validConversationContext(value: unknown): ConversationContext | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<ConversationContext>;
+  const serialized = JSON.stringify(candidate);
+  if (serialized.length > MAX_CONTEXT_CHARACTERS) return null;
+  if (!candidate.interpretation || !candidate.model) return null;
+  if (!Array.isArray(candidate.sensors) || !Array.isArray(candidate.limitations)) return null;
+  const previousQuery = cleanText(candidate.previousQuery, 1_500);
+  const previousAnswer = cleanText(candidate.previousAnswer, 2_400);
+  if (!previousQuery || !previousAnswer) return null;
+  return {
+    ...candidate,
+    previousQuery,
+    previousAnswer,
+    sensors: candidate.sensors.filter((item): item is string => typeof item === "string").map((item) => cleanText(item, 100)).filter(Boolean).slice(0, 8),
+    limitations: candidate.limitations.filter((item): item is string => typeof item === "string").map((item) => cleanText(item, 300)).filter(Boolean).slice(0, 8),
+    sceneCount: Number.isInteger(candidate.sceneCount) && Number(candidate.sceneCount) >= 0 ? Number(candidate.sceneCount) : 0,
+    eligibleSceneCount: Number.isInteger(candidate.eligibleSceneCount) && Number(candidate.eligibleSceneCount) >= 0 ? Number(candidate.eligibleSceneCount) : 0,
+    clarification: typeof candidate.clarification === "string" ? cleanText(candidate.clarification, 400) : null,
+  } as ConversationContext;
+}
+
 export async function POST(request: Request) {
   const contentType = request.headers.get("content-type")?.toLowerCase() || "";
   if (!contentType.startsWith("application/json")) {
@@ -118,7 +148,7 @@ export async function POST(request: Request) {
     if (new TextEncoder().encode(rawBody).byteLength > MAX_BODY_BYTES) {
       return jsonResponse({ error: "הבקשה גדולה מהמגבלה המותרת." }, 413);
     }
-    let body: { query?: unknown; clientDate?: unknown };
+    let body: { query?: unknown; clientDate?: unknown; conversationContext?: unknown };
     try {
       body = JSON.parse(rawBody) as { query?: unknown; clientDate?: unknown };
     } catch {
@@ -132,7 +162,32 @@ export async function POST(request: Request) {
       return jsonResponse({ error: `הבקשה מוגבלת ל-${MAX_QUERY_CHARACTERS} תווים.` }, 400);
     }
     const clientDate = validClientDate(body.clientDate);
-    const result = await analyzeRequest(query, { referenceDate: clientDate });
+    const conversationContext = validConversationContext(body.conversationContext);
+    const conversationalAnswer = answerConversationQuestion(query, conversationContext);
+    if (conversationalAnswer) return jsonResponse(conversationalAnswer);
+    if (isStandalonePlaceQuestion(query)) {
+      const locationText = extractLocationCandidate(query);
+      const location = locationText ? await resolveLocation(locationText, query) : null;
+      if (!location) {
+        return jsonResponse({
+          kind: "answer",
+          ok: true,
+          answer: "לא הצלחתי לזהות בוודאות את המקום שבשאלה. אפשר לכתוב את שם העיר או המדינה גם באנגלית, או לצרף מדינה כדי למנוע עמימות.",
+          location: null,
+          contextUsed: false,
+          generatedAt: new Date().toISOString(),
+        });
+      }
+      return jsonResponse({
+        kind: "answer",
+        ok: true,
+        answer: `${location.name} נמצא סביב הקואורדינטות ${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}. המקום זוהה בהצלחה, ואפשר להמשיך ולבקש תמונות לוויין או ניתוח אירוע באזור הזה.`,
+        location,
+        contextUsed: false,
+        generatedAt: new Date().toISOString(),
+      });
+    }
+    const result = await analyzeRequest(query, { referenceDate: clientDate, conversationContext });
     return jsonResponse(result);
   } catch {
     return jsonResponse({

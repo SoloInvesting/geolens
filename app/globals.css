@@ -257,6 +257,13 @@ a {
   gap: 3px;
 }
 
+.chat-header > .chat-header-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
 .chat-header strong {
   font-size: 13px;
 }
@@ -280,6 +287,22 @@ a {
   font-size: 9px;
   font-weight: 800;
   cursor: pointer;
+}
+
+.chat-header .reset-chat {
+  min-width: 74px;
+  color: var(--ink);
+}
+
+.chat-header .reset-chat:not(:disabled):hover,
+.chat-header .reset-chat:not(:disabled):focus-visible {
+  border-color: rgba(183, 255, 74, 0.42);
+  color: var(--lime);
+}
+
+.chat-header button:disabled {
+  opacity: 0.36;
+  cursor: not-allowed;
 }
 
 .message-stream {
@@ -360,6 +383,10 @@ a {
 
 .assistant-message[aria-current="true"] {
   border-left-color: rgba(183, 255, 74, 0.5);
+}
+
+.conversation-answer {
+  border-left-color: rgba(114, 213, 255, 0.42);
 }
 
 .assistant-answer,
