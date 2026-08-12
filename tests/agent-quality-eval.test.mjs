@@ -91,12 +91,12 @@ function testEnvironment() {
   };
 }
 
-async function analyze(worker, query, clientId = "quality-suite") {
+async function analyze(worker, query, clientId = "quality-suite", aoiGeometry = null) {
   const response = await worker.fetch(
     new Request("http://localhost/api/analyze", {
       method: "POST",
       headers: { "content-type": "application/json", "x-forwarded-for": clientId },
-      body: JSON.stringify({ query, clientDate: "2026-08-10" }),
+      body: JSON.stringify({ query, clientDate: "2026-08-10", aoiGeometry }),
     }),
     testEnvironment(),
     { waitUntil() {}, passThroughOnException() {} },
@@ -221,6 +221,17 @@ test("passes deterministic Hebrew location, time, evidence, safety, and cache ga
     assert.equal(spain.confidenceScore, null);
     assert.doesNotMatch(JSON.stringify(spain), /OPENROUTER_API_KEY|GEO_MODEL_TOKEN/);
     assert.equal(openRouterRequests, 0);
+
+    const drawnAoi = await analyze(
+      worker,
+      "נתח את האזור שסימנתי על המפה",
+      "quality-drawn-aoi",
+      polygon([-3.72, 40.38, -3.62, 40.46]),
+    );
+    assert.equal(drawnAoi.ok, true);
+    assert.match(drawnAoi.location.name, /אזור שסומן על המפה/);
+    assert.deepEqual(drawnAoi.mission.aoi.bbox, [-3.72, 40.38, -3.62, 40.46]);
+    assert.doesNotMatch(JSON.stringify(drawnAoi.feasibility.checks), /LOCATION_UNRESOLVED/);
   } finally {
     globalThis.fetch = originalFetch;
   }
