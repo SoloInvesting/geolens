@@ -12,6 +12,7 @@ import type {
   SceneResult,
 } from "@/app/types";
 import { displayPreviewUrl } from "@/lib/preview-url";
+import { buildMapSession, serializeMapSession } from "@/lib/map-session";
 import { GeoMap } from "./GeoMap";
 
 type ConversationItem =
@@ -164,17 +165,26 @@ function SatelliteCanvas({
   selectedSceneId,
   onSelectScene,
   onSceneError,
+  compareMode,
+  comparePosition,
+  onComparePositionChange,
 }: {
   analysis: AnalysisResponse | null;
   scenes: SceneResult[];
   selectedSceneId: string | null;
   onSelectScene: (sceneId: string) => void;
   onSceneError: (sceneId: string) => void;
+  compareMode: boolean;
+  comparePosition: number;
+  onComparePositionChange: (value: number) => void;
 }) {
   const selected = scenes.find((scene) => scene.id === selectedSceneId)
     || scenes.find((scene) => scene.role === "primary")
     || scenes[0];
   const previewUrl = displayPreviewUrl(selected?.thumbnailUrl || null);
+  const comparison = scenes.find((scene) => scene.role === "confirmation" && scene.id !== selected?.id)
+    || scenes.find((scene) => scene.id !== selected?.id);
+  const comparisonUrl = displayPreviewUrl(comparison?.thumbnailUrl || null);
 
   if (!analysis || !selected || !previewUrl) {
     return (
@@ -196,6 +206,19 @@ function SatelliteCanvas({
         sizes="100vw"
         onError={() => onSceneError(selected.id)}
       />
+      {compareMode && comparison && comparisonUrl && (
+        <div className="satellite-comparison" style={{ width: `${comparePosition}%` }}>
+          <Image
+            src={comparisonUrl}
+            alt={`תמונת השוואה ${comparison.instrument} מתאריך ${comparison.datetime}`}
+            fill
+            unoptimized
+            className="satellite-primary satellite-comparison-image"
+            sizes="100vw"
+            onError={() => onSceneError(comparison.id)}
+          />
+        </div>
+      )}
       <div className="satellite-meta">
         <span>{sourceRole(selected)}</span>
         <strong>{selected.instrument}</strong>
@@ -218,6 +241,26 @@ function SatelliteCanvas({
         </div>
       )}
       <p className="satellite-disclaimer">תצוגת Quicklook של סצנת המקור, לא פענוח פיקסלים.</p>
+      {comparison && comparisonUrl && (
+        <div className="satellite-compare-control">
+          <button type="button" onClick={() => onComparePositionChange(compareMode ? 0 : 50)}>
+            {compareMode ? "הצג תמונה יחידה" : "השוואת לפני / אחרי"}
+          </button>
+          {compareMode && (
+            <label>
+              <span>חלוקת התצוגה</span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={comparePosition}
+                onChange={(event) => onComparePositionChange(Number(event.target.value))}
+                aria-label="מיקום מחוון השוואת התמונות"
+              />
+            </label>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -269,10 +312,21 @@ function EvidenceDrawer({
         {analysis.scenes.length ? (
           <div className="evidence-list">
             {analysis.scenes.map((scene) => (
-              <a href={scene.stacUrl} target="_blank" rel="noreferrer" key={scene.id}>
-                <strong>{scene.instrument}</strong>
-                <span>{new Date(scene.datetime).toLocaleDateString("he-IL")} · {scene.catalog}</span>
-              </a>
+              <div className="evidence-scene" key={scene.id}>
+                <a href={scene.stacUrl} target="_blank" rel="noreferrer">
+                  <strong>{scene.instrument}</strong>
+                  <span>{new Date(scene.datetime).toLocaleDateString("he-IL")} · {scene.catalog} · {scene.assetAccess}</span>
+                </a>
+                {scene.assets.length > 0 && (
+                  <div className="evidence-assets" aria-label={`נכסי המקור של ${scene.instrument}`}>
+                    {scene.assets.slice(0, 4).map((asset) => scene.assetAccess === "public-http" ? (
+                      <a href={asset.href} target="_blank" rel="noreferrer" key={asset.href}>{asset.label}</a>
+                    ) : (
+                      <span key={asset.href} title="הקטלוג זמין, אך הנכס דורש הרשאה או תשלום ספק">{asset.label} · מוגבל</span>
+                    ))}
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         ) : <p>לא נמצאו סצנות מקור מתאימות.</p>}
@@ -302,6 +356,13 @@ function EvidenceDrawer({
           )}
         >GeoJSON</button>
         <button type="button" onClick={() => downloadArtifact(`geolens-${analysis.ledger.missionId}.csv`, ledgerCsv(analysis), "text/csv;charset=utf-8")}>CSV</button>
+        <button
+          type="button"
+          onClick={() => {
+            const session = buildMapSession(analysis);
+            if (session) downloadArtifact(`geolens-${session.sessionId}.map.json`, serializeMapSession(session), "application/json");
+          }}
+        >מצב מפה</button>
       </div>
     </aside>
   );
@@ -314,6 +375,8 @@ export function GeoAgentApp() {
   const [activeResultId, setActiveResultId] = useState<string | null>(null);
   const [canvasMode, setCanvasMode] = useState<CanvasMode>("map");
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+  const [comparePosition, setComparePosition] = useState(0);
+  const [draftAoi, setDraftAoi] = useState<GeoJsonGeometry | null>(null);
   const [failedPreviewIds, setFailedPreviewIds] = useState<string[]>([]);
   const [chatOpen, setChatOpen] = useState(true);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
@@ -379,6 +442,7 @@ export function GeoAgentApp() {
           query: text,
           clientDate: localCalendarDate(),
           conversationContext: conversationContext(analysis),
+          aoiGeometry: draftAoi,
         }),
       });
       const payload = (await response.json()) as AgentResponse | { error: string };
@@ -394,6 +458,8 @@ export function GeoAgentApp() {
 
       setAnalysis(payload);
       setSelectedSceneId(null);
+      setComparePosition(0);
+      setDraftAoi(null);
       setEvidenceOpen(false);
       if (!payload.scenes.some((scene) => displayPreviewUrl(scene.thumbnailUrl))) setCanvasMode("map");
       window.localStorage.setItem("geolens-last-analysis", JSON.stringify(payload));
@@ -427,6 +493,8 @@ export function GeoAgentApp() {
     setAnalysis(null);
     setActiveResultId(null);
     setSelectedSceneId(null);
+    setComparePosition(0);
+    setDraftAoi(null);
     setFailedPreviewIds([]);
     setEvidenceOpen(false);
     setCanvasMode("map");
@@ -460,7 +528,18 @@ export function GeoAgentApp() {
       <section className="canvas-shell" aria-label="קנבס גיאו-מרחבי">
         <div className="canvas-stage">
           <div className={`canvas-view${canvasMode === "map" ? " is-active" : ""}`} aria-hidden={canvasMode !== "map"}>
-            <GeoMap analysis={analysis} preferredSceneId={selectedScene?.id || null} />
+            <GeoMap
+              analysis={analysis}
+              preferredSceneId={selectedScene?.id || null}
+              draftAoi={draftAoi}
+              onAoiDrawn={(geometry) => {
+                setDraftAoi(geometry);
+                setQuery((current) => current.trim() || "נתח את האזור שסימנתי על המפה");
+                setChatOpen(true);
+                setEvidenceOpen(false);
+                setStatusMessage("אזור AOI סומן. כתוב בקשה ושלח כדי להפעיל את הפענוח עליו.");
+              }}
+            />
           </div>
           <div className={`canvas-view${canvasMode === "satellite" ? " is-active" : ""}`} aria-hidden={canvasMode !== "satellite"}>
             <SatelliteCanvas
@@ -468,6 +547,9 @@ export function GeoAgentApp() {
               scenes={previewScenes}
               selectedSceneId={selectedScene?.id || null}
               onSelectScene={setSelectedSceneId}
+              compareMode={comparePosition > 0}
+              comparePosition={comparePosition || 50}
+              onComparePositionChange={(value) => setComparePosition(value === 0 ? 0 : Math.max(1, Math.min(99, value)))}
               onSceneError={(sceneId) => {
                 setFailedPreviewIds((current) => current.includes(sceneId) ? current : [...current, sceneId]);
                 if (previewScenes.every((scene) => scene.id === sceneId)) setCanvasMode("map");
@@ -573,6 +655,7 @@ export function GeoAgentApp() {
                     setAnalysis(item.result);
                     setActiveResultId(item.id);
                     setSelectedSceneId(null);
+                    setComparePosition(0);
                     setEvidenceOpen(false);
                     if (!item.result.scenes.some((scene) => displayPreviewUrl(scene.thumbnailUrl))) setCanvasMode("map");
                     window.localStorage.setItem("geolens-last-analysis", JSON.stringify(item.result));
@@ -582,14 +665,18 @@ export function GeoAgentApp() {
             })}
 
             {busy && (
-              <div className="thinking-message" aria-label={BRAIN_STAGES[brainStage]}>
-                <span /><span /><span />
+              <div className="thinking-wrap">
+                <div className="thinking-progress" aria-live="polite">{BRAIN_STAGES[brainStage]}</div>
+                <div className="thinking-message" aria-label={BRAIN_STAGES[brainStage]}>
+                  <span /><span /><span />
+                </div>
               </div>
             )}
             <div ref={endRef} />
           </div>
 
           <form className="prompt-box" onSubmit={handleSubmit}>
+            {draftAoi && <span className="aoi-draft-pill">AOI מסומן</span>}
             <textarea
               ref={promptRef}
               value={query}
