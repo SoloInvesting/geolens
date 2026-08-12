@@ -163,6 +163,40 @@ export function isValidGeoJsonGeometry(value: unknown): value is GeoJsonGeometry
   }
 }
 
+export function geometryBbox(value: GeoJsonGeometry): [number, number, number, number] {
+  const positions: Position[] = [];
+  const collect = (candidate: GeoJsonGeometry | null) => {
+    if (!candidate) return;
+    if (candidate.type === "Point") {
+      positions.push(candidate.coordinates as Position);
+      return;
+    }
+    if (candidate.type === "FeatureCollection") {
+      for (const feature of candidate.features) collect(feature.geometry);
+      return;
+    }
+    const visit = (node: unknown): void => {
+      if (!Array.isArray(node)) return;
+      if (node.length >= 2 && typeof node[0] === "number" && typeof node[1] === "number") {
+        positions.push([node[0], node[1]]);
+        return;
+      }
+      for (const child of node) visit(child);
+    };
+    visit(candidate.coordinates);
+  };
+  collect(value);
+  if (!positions.length) throw new GeoJsonValidationError("Geometry has no coordinates.");
+  const longitudes = positions.map(([longitude]) => longitude);
+  const latitudes = positions.map(([, latitude]) => latitude);
+  return [
+    Math.min(...longitudes),
+    Math.min(...latitudes),
+    Math.max(...longitudes),
+    Math.max(...latitudes),
+  ];
+}
+
 function radians(value: number) {
   return value * Math.PI / 180;
 }
